@@ -18,3 +18,8 @@ ID: me
 GET $baseURL/$path/me
 H: Content-Type = Application-Json
 H: Authorization = Bearer $login.token
+
+ID: new
+GET $baseURL/$path/user/$me.id
+H: Content-Type = Application-Json
+H: Authorization = Bearer $login.token

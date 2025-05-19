@@ -12,8 +12,13 @@ impl Config {
         if args[1] == "" || args[2] == "" {
             panic!("invalid arguments");
         }
-
+        
         let filename = args[1].clone();
+
+        if !filename.ends_with(".lreq") {
+            panic!("invalid filename provided");
+        }
+
         let target = args[2].clone();
 
         Config { filename, target }
