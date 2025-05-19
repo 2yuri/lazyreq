@@ -1,0 +1,20 @@
+VARS
+  baseURL = http://localhost:8080
+  path = api/v1
+
+HOOKS
+ login = $req.login
+ me = $req.me
+
+ID: login
+POST $baseURL/$path/login
+H: Content-Type = Application-Json
+{
+  "login": "foo",
+  "email": "bar"
+}
+
+ID: me
+GET $baseURL/$path/me
+H: Content-Type = Application-Json
+H: Authorization = Bearer $login.token
