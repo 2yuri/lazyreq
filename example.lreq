@@ -9,7 +9,7 @@ HOOKS
 
 ID: login
 POST $baseURL/$path/login
-H: Content-Type = Application-Json
+H: Content-Type = application/json
 {
   "login": "foo",
   "email": "bar"
@@ -17,10 +17,10 @@ H: Content-Type = Application-Json
 
 ID: me
 GET $baseURL/$path/me
-H: Content-Type = Application-Json
+H: Content-Type = application/json
 H: Authorization = Bearer $login.token
 
 ID: new
 GET $baseURL/$path/user/$me.id
-H: Content-Type = Application-Json
+H: Content-Type = application/json
 H: Authorization = Bearer $login.token

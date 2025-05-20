@@ -138,10 +138,10 @@ impl LazyReq {
             http_headers.insert(HeaderName::from_bytes(key.as_bytes()).unwrap(), HeaderValue::from_str(value.as_str()).unwrap());
         }
 
-
         let client = Client::new();
         let response = client
                 .request(http_method, new.path)
+                .body(new.body)
                 .headers(http_headers)
                 .send().await?;
 

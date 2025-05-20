@@ -3,7 +3,7 @@ builds:
   - id: "lazyreq"
     builder: rust
     binary: lazyreq
-    command: zigbuild
+    command: build
     targets:
       - x86_64-unknown-linux-gnu
       - x86_64-apple-darwin
@@ -13,7 +13,3 @@ builds:
     flags:
       - --release
     skip: false
-before:
-  hooks:
-    - rustup default stable
-    - cargo install --locked cargo-zigbuild

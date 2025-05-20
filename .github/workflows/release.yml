@@ -17,6 +17,9 @@ jobs:
           fetch-depth: 0
       - name: Set up Go
         uses: actions/setup-go@v5
+      - name: Setup musl
+        run: |
+          sudo apt-get install -y musl
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
