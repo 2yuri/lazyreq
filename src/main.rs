@@ -6,7 +6,7 @@ use lazyreq::LazyReq;
 mod request;
 mod lazyreq;
 mod config;
-
+mod cache;
 
 
 #[tokio::main]
