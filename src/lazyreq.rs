@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs;
+use std::{env, fs};
 use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client};
@@ -32,7 +32,6 @@ impl LazyReq {
                 print!( "{}{}{}", "[".bold().green(), req.method.clone().bold().green(), "]".bold().green() );
                 let (url, result) = self.execute(req).await.unwrap();
                 print!(" {}\n", url.bold().green());
-                print!("{}\n", "RESULT:".bold().green());
 
                 let pretty_json: Value = serde_json::from_str(&result.as_str()).unwrap();
                 println!("{}", to_string_pretty(&pretty_json).unwrap());
@@ -157,6 +156,9 @@ impl LazyReq {
         let mut request_body: String = String::new();
         for line in  fs::read_to_string(filename).unwrap().lines() {
             let mut line = line.to_string();
+            if line.trim().starts_with("#") {
+                continue;
+            }
             if line.starts_with("VARS") {
                 context = "VARS";
             }
@@ -173,7 +175,7 @@ impl LazyReq {
                 last_id = line.split(":").collect::<Vec<&str>>()[1].trim().to_string();
                 self.add_request(last_id.clone(), Request::default());
             } else {
-                if line == "" {
+                if line.trim() == "" {
                     continue;
                 }
 
@@ -182,7 +184,16 @@ impl LazyReq {
                         if parts.len() != 2 {
                             panic!("invalid variable provided {}", line);
                         }
-                        self.add_variable(parts[0].trim().to_string(), parts[1].trim().to_string());
+                        let mut value = parts[1].trim().to_string();
+                        if value.starts_with("$env.") {
+                            value = env::var(value.replace("$env.", "")).unwrap();
+                        }
+
+                        if value.starts_with('"') && value.ends_with('"') || value.starts_with("'") && value.ends_with("'") {
+                            value = value.replace('"', "").replace("'", "");
+                        }
+
+                        self.add_variable(parts[0].trim().to_string(), value);
                     }
                     if context == "HOOKS"  {
                         let parts = line.split("=").collect::<Vec<&str>>();
