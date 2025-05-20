@@ -1,9 +1,12 @@
 version: 2
 builds:
   - id: "lazyreq"
+    hooks:
+      pre:
+        - rustup default stable
+        - cargo install --locked cargo-zigbuild
     builder: rust
     binary: lazyreq
-    command: build
     targets:
       - x86_64-unknown-linux-gnu
       - x86_64-apple-darwin
