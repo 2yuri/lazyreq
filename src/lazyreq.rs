@@ -1,16 +1,19 @@
 use async_recursion::async_recursion;
 use colored::*;
 use core::panic;
+use mime_guess::from_path;
 use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::multipart::{self, Part};
 use reqwest::Client;
 use serde_json::to_string_pretty;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::error::Error;
+use std::path::Path;
 use std::{env, fs};
 
-use crate::cache::{self, Cache};
+use crate::cache::Cache;
 use crate::request::Request;
 
 pub struct LazyReq {
@@ -160,7 +163,13 @@ impl LazyReq {
             headers.insert(key.clone(), normalized.clone());
         }
 
-        let mut new = Request::new(req.method.clone(), url.clone(), req.body.clone());
+        let mut new = Request::new(
+            req.method.clone(),
+            url.clone(),
+            req.body.clone(),
+            req.multipart.clone(),
+        );
+
         if !headers.is_empty() {
             new.set_headers(headers);
         }
@@ -174,13 +183,53 @@ impl LazyReq {
             );
         }
 
+        let mut multipart: Option<multipart::Form> = None;
+
+        let new_multipart = new.multipart.clone();
+        if new_multipart.len() > 0 {
+            let mut m = multipart::Form::new();
+
+            for part in new_multipart.iter() {
+                if part.content.starts_with("file://") {
+                    let path_str = part.content.clone().replace("file://", "");
+                    let path = Path::new(&path_str);
+                    let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
+                    let content: Vec<u8> = fs::read(path).unwrap();
+
+                    let mime = from_path(&path).first_or_octet_stream();
+
+                    let file_part = Part::bytes(content)
+                        .file_name(file_name.clone())
+                        .mime_str(mime.as_ref())
+                        .ok();
+
+                    m = m.part(part.name.clone(), file_part.unwrap());
+                } else {
+                    m = m.text(part.name.clone(), part.content.to_string());
+                }
+            }
+
+            multipart = Some(m);
+            http_headers.remove("Content-Type");
+        }
+
         let client = Client::new();
-        let response = client
-            .request(http_method, new.path)
-            .body(new.body)
-            .headers(http_headers)
-            .send()
-            .await?;
+
+        let response = if multipart.is_some() {
+            client
+                .request(http_method, new.path)
+                .headers(http_headers)
+                .multipart(multipart.unwrap())
+                .send()
+                .await?
+        } else {
+            client
+                .request(http_method, new.path)
+                .body(new.body)
+                .headers(http_headers)
+                .send()
+                .await?
+        };
 
         let status = response.status();
 
@@ -250,6 +299,18 @@ impl LazyReq {
                         let key = parts[0].trim().to_string();
                         let value = parts[1].trim().to_string();
                         req.add_header(key, value);
+                        continue;
+                    }
+
+                    if line.starts_with("M:") {
+                        line = line.replace("M:", "");
+                        let parts = line.split("=").collect::<Vec<&str>>();
+                        if parts.len() != 2 {
+                            panic!("invalid multipart form provided {}", line);
+                        }
+                        let key = parts[0].trim().to_string();
+                        let value = parts[1].trim().to_string();
+                        req.add_multipart(key.clone(), value);
                         continue;
                     }
 

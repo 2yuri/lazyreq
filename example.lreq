@@ -4,7 +4,7 @@ VARS
   # feel free to use $env.VAR_NAME to get environment variables
   
 HOOKS
- login = $req.login 10 
+ login = $req.login 10
  # cache for 10 seconds
  me = $req.me
 
@@ -12,16 +12,23 @@ ID: login
 POST $baseURL/$path/login
 H: Content-Type = application/json
 {
-  "login": "foo",
-  "email": "bar"
+  "email": "hello@yuri.dev",
+  "password": "T2estPassword#@"
 }
 
 ID: me
-GET $baseURL/$path/me
+GET $baseURL/$path/users/me
 H: Content-Type = application/json
 H: Authorization = Bearer $login.token
 
+
+ID: update-picture
+PUT $baseURL/$path/users/profile-image
+H: Content-Type = multipart/form-data
+H: Authorization = Bearer $login.token
+M: image = file://./logo.png
+
 ID: new
-GET $baseURL/$path/user/$me.id
+GET $baseURL/$path/users/$me.id
 H: Content-Type = application/json
 H: Authorization = Bearer $login.token

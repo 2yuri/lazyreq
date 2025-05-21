@@ -7,20 +7,28 @@ pub struct Request {
     pub path: String,
     pub headers: HashMap<String, String>,
     pub body: String,
+    pub multipart: Vec<MultiPart>,
+}
+
+#[derive(Clone)]
+pub struct MultiPart {
+    pub name: String,
+    pub content: String,
 }
 
 impl Request {
     pub fn default() -> Request {
         Request {
-            method: "NOT SET".to_string(), 
+            method: "NOT SET".to_string(),
             path: "".to_string(),
             headers: HashMap::new(),
             body: "".to_string(),
+            multipart: Vec::new(),
         }
     }
 
     pub fn format_method(&self) -> Method {
-         match self.method.to_uppercase().as_str() {
+        match self.method.to_uppercase().as_str() {
             "GET" => Method::GET,
             "POST" => Method::POST,
             "PUT" => Method::PUT,
@@ -32,12 +40,13 @@ impl Request {
         }
     }
 
-    pub fn new(method: String, path: String, body: String) -> Request {
+    pub fn new(method: String, path: String, body: String, multipart: Vec<MultiPart>) -> Request {
         Request {
             method,
             path,
             headers: HashMap::new(),
             body,
+            multipart,
         }
     }
 
@@ -45,7 +54,14 @@ impl Request {
         self.headers.insert(name, value);
     }
 
-     pub fn set_headers(&mut self, headers: HashMap<String, String>) {
+    pub fn add_multipart(&mut self, name: String, value: String) {
+        self.multipart.push(MultiPart {
+            name,
+            content: value,
+        });
+    }
+
+    pub fn set_headers(&mut self, headers: HashMap<String, String>) {
         self.headers = headers;
     }
 
