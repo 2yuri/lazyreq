@@ -1,57 +1,84 @@
-use std::fs::File;
+use crate::timest::{add_minutes, add_seconds, get_timestamp, is_older_than};
 use std::collections::HashMap;
-use std::path::Path;
+use std::fs::{self, File};
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::{self, BufRead, Write};
+use std::path::Path;
 
 pub struct Cache {
     file: File,
-    pub data: HashMap<String, CacheData>,
-}
-
-pub struct CacheData {
-    pub data: String,
+    pub data: Option<String>,
     pub expire: u64,
 }
 
 fn calculate_cache_name(filename: &str, req_id: &str) -> String {
-        let mut hasher = DefaultHasher::new();
-        filename.hash(&mut hasher);
-        req_id.hash(&mut hasher);
+    let mut hasher = DefaultHasher::new();
+    filename.hash(&mut hasher);
+    req_id.hash(&mut hasher);
 
-        return format!("{:x}", hasher.finish());
+    return format!("{:x}", hasher.finish());
+}
+
+fn find_file(filename: &str, req_id: &str) -> (bool, File) {
+    let cache_name = calculate_cache_name(filename, req_id);
+
+    let path: String = "./.lazyreq/cache/".to_string() + &cache_name;
+
+    if Path::new(&path).exists() {
+        return (false, File::open(&path).unwrap());
     }
 
-    fn find_file(filename: &str, req_id: &str) -> File {
-        let cache_name = calculate_cache_name(filename, req_id);
-
-        let path: String = "~/.lazyreq/cache/".to_string() + &cache_name;
-
-        if Path::new(&path).exists() {
-            return File::open(&path).unwrap();
-        }
-
-        return File::create_new(&path).unwrap();
+    if !Path::new("./.lazyreq").exists() {
+        fs::create_dir("./.lazyreq").unwrap();
     }
+
+    if !Path::new("./.lazyreq/cache").exists() {
+        fs::create_dir("./.lazyreq/cache").unwrap();
+    }
+
+    return (true, File::create_new(&path).unwrap());
+}
 
 impl Cache {
     pub fn new(filename: &str, req_id: &str) -> Cache {
-        let f = find_file(filename, req_id);
-        let data = HashMap::new();
-        Cache { file: f, data }
+        let (is_new, f) = find_file(filename, req_id);
+        if is_new {
+            println!("new cache");
+            return Cache {
+                file: f,
+                data: None,
+                expire: 0,
+            };
+        }
+
+        let reader = io::BufReader::new(f.try_clone().unwrap());
+        let mut lines = reader.lines();
+        let first_line = lines.next().unwrap();
+        let second_line = lines.next().unwrap();
+
+        Cache {
+            file: f,
+            data: Some(second_line.unwrap().to_string()),
+            expire: first_line.unwrap().to_string().parse::<u64>().unwrap(),
+        }
     }
 
-    pub fn set(&mut self, key: &str, value: String) {
-        let on_cache = self.data.get(key);
-        let current_timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        if on_cache.is_some() && on_cache.unwrap().expire > {
-            panic!("expired");
-        }
-        if !self.data.contains_key(key) {
-            self.data.insert(key.to_string(), value.to_string());
+    pub fn get(&mut self) -> Option<String> {
+        if self.data.is_some() {
+            if is_older_than(self.expire) {
+                return None;
+            }
+
+            return self.data.clone();
         }
 
-        self.data.insert(key.to_string(), value.to_string());
+        return None;
+    }
+
+    pub fn set(&mut self, value: String, expire_in_minutes: u64) {
+        let expired_at = add_seconds(get_timestamp(), expire_in_minutes);
+
+        self.file.write_all(format!("{}\n", expired_at).as_bytes());
+        self.file.write_all(format!("{}\n", value).as_bytes());
     }
 }
-
-

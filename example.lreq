@@ -4,7 +4,7 @@ VARS
   # feel free to use $env.VAR_NAME to get environment variables
   
 HOOKS
- login = $req.login
+ login = $req.login 10
  me = $req.me
 
 ID: login
