@@ -1,9 +1,8 @@
-use crate::timest::{add_minutes, add_seconds, get_timestamp, is_older_than};
-use std::collections::HashMap;
+use crate::timest::{add_seconds, get_timestamp, is_older_than};
 use std::fs::{self, File};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, BufRead, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub struct Cache {
     file: File,
@@ -19,31 +18,47 @@ fn calculate_cache_name(filename: &str, req_id: &str) -> String {
     return format!("{:x}", hasher.finish());
 }
 
+fn get_lazyreq_dir() -> PathBuf {
+    home::home_dir()
+        .expect("Failed to retrieve home directory")
+        .join(".lazyreq")
+}
+
+fn setup_directories() -> std::io::Result<PathBuf> {
+    let base_dir = get_lazyreq_dir();
+
+    let cache_dir = base_dir.join("cache");
+
+    println!("Base directory: {:?}", base_dir);
+    println!("Cache directory: {:?}", cache_dir);
+
+    fs::create_dir_all(&cache_dir)?;
+
+    Ok(base_dir)
+}
+
 fn find_file(filename: &str, req_id: &str) -> (bool, File) {
     let cache_name = calculate_cache_name(filename, req_id);
 
-    let path: String = "./.lazyreq/cache/".to_string() + &cache_name;
+    let path: String = get_lazyreq_dir().to_string_lossy().to_string() + "/cache";
+    let cache_file = format!("{}/{}", path.clone(), cache_name);
 
-    if Path::new(&path).exists() {
-        return (false, File::open(&path).unwrap());
+    if Path::new(&cache_file).exists() {
+        return (false, File::open(cache_file).unwrap());
     }
 
-    if !Path::new("./.lazyreq").exists() {
-        fs::create_dir("./.lazyreq").unwrap();
+    match setup_directories() {
+        Ok(path) => println!("Directories are set up at {:?}", path),
+        Err(e) => eprintln!("Failed to set up directories: {}", e),
     }
 
-    if !Path::new("./.lazyreq/cache").exists() {
-        fs::create_dir("./.lazyreq/cache").unwrap();
-    }
-
-    return (true, File::create_new(&path).unwrap());
+    return (true, File::create_new(&cache_file).unwrap());
 }
 
 impl Cache {
     pub fn new(filename: &str, req_id: &str) -> Cache {
         let (is_new, f) = find_file(filename, req_id);
         if is_new {
-            println!("new cache");
             return Cache {
                 file: f,
                 data: None,

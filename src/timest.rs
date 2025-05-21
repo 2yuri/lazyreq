@@ -12,10 +12,6 @@ pub fn is_older_than(timestamp: u64) -> bool {
     current_timestamp > timestamp
 }
 
-pub fn add_minutes(timestamp: u64, minutes: u64) -> u64 {
-    timestamp + (minutes * 60)
-}
-
 pub fn add_seconds(timestamp: u64, seconds: u64) -> u64 {
     timestamp + seconds
 }
