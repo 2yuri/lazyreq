@@ -9,12 +9,14 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::{env, fs};
 
+use crate::cache::{self, Cache};
 use crate::request::Request;
 
 pub struct LazyReq {
     variables: HashMap<String, String>,
     hooks: HashMap<String, String>,
     requests: HashMap<String, Request>,
+    filename: String,
 }
 
 impl LazyReq {
@@ -23,6 +25,7 @@ impl LazyReq {
             variables: HashMap::new(),
             hooks: HashMap::new(),
             requests: HashMap::new(),
+            filename: "".to_string(),
         }
     }
 
@@ -54,11 +57,28 @@ impl LazyReq {
     }
 
     #[async_recursion]
-    pub async fn handle_macro(&self, macr: String) -> (String, String) {
+    pub async fn handle_macro(&self, macr: String, splits: Vec<&str>) -> (String, String) {
         if macr.starts_with("$req.") {
             let macro_parsed = &macr.replace("$req.", "");
+
+            let mut cacher: Option<Cache> = None;
+            if splits.len() > 1 {
+                cacher = Some(Cache::new(&self.filename, macro_parsed));
+                let has = cacher.as_mut().unwrap().get();
+                if has.is_some() {
+                    return (macro_parsed.clone(), has.unwrap());
+                }
+            }
+
             let req = self.requests.get(macro_parsed).unwrap();
             let (_, _, result) = self.execute(req).await.unwrap();
+            if splits.len() > 1 && cacher.is_some() {
+                cacher
+                    .as_mut()
+                    .unwrap()
+                    .set(result.clone(), splits[1].parse::<u64>().unwrap());
+            }
+
             return (macro_parsed.clone(), result);
         }
 
@@ -86,7 +106,8 @@ impl LazyReq {
                 let hook = is_hook.unwrap().to_string();
                 let parts: Vec<&str> = hook.split(" ").collect::<Vec<&str>>();
 
-                let (macro_name, macro_result) = self.handle_macro(parts[0].to_string()).await;
+                let (macro_name, macro_result) =
+                    self.handle_macro(parts[0].to_string(), parts).await;
                 let mut parsed: Value = serde_json::from_str(&macro_result.as_str()).unwrap();
 
                 let macro_name_parsed = "$".to_string() + macro_name.as_str() + ".";
@@ -168,6 +189,7 @@ impl LazyReq {
     }
 
     pub fn from_file(&mut self, filename: String) {
+        self.filename = filename.clone();
         let mut context = "VARS";
         let mut last_id: String = String::new();
         let mut request_body: String = String::new();

@@ -3,11 +3,11 @@ use std::env;
 use config::Config;
 use lazyreq::LazyReq;
 
-mod request;
-mod lazyreq;
+mod cache;
 mod config;
-
-
+mod lazyreq;
+mod request;
+mod timest;
 
 #[tokio::main]
 async fn main() {
