@@ -38,9 +38,12 @@ impl LazyReq {
                 let (status, url, result) = self.execute(req).await.unwrap();
                 print!(" {}\n", url.bold().green());
 
-                println!("{} {}", "Status: ".bold().green(), status.bold().green());
-                let pretty_json: Value = serde_json::from_str(&result.as_str()).unwrap();
-                println!("{}", to_string_pretty(&pretty_json).unwrap());
+                println!("{} {}", "Status:".bold().green(), status.bold().green());
+                let pretty_json: Value =
+                    serde_json::from_str(&result.as_str()).unwrap_or(Value::Null);
+                if !pretty_json.is_null() {
+                    println!("{}", to_string_pretty(&pretty_json).unwrap());
+                }
             }
             None => {
                 println!("Request not found");
