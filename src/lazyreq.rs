@@ -1,13 +1,13 @@
-use std::collections::HashMap;
-use std::{env, fs};
-use regex::Regex;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
-use reqwest::{Client};
-use std::error::Error;
-use serde_json::Value;
 use async_recursion::async_recursion;
 use colored::*;
-use serde_json::{to_string_pretty};
+use regex::Regex;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::Client;
+use serde_json::to_string_pretty;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::error::Error;
+use std::{env, fs};
 
 use crate::request::Request;
 
@@ -27,15 +27,21 @@ impl LazyReq {
     }
 
     pub async fn do_request(&self, id: String) {
-       match self.requests.get(&id) {
+        match self.requests.get(&id) {
             Some(req) => {
-                print!( "{}{}{}", "[".bold().green(), req.method.clone().bold().green(), "]".bold().green() );
-                let (url, result) = self.execute(req).await.unwrap();
+                print!(
+                    "{}{}{}",
+                    "[".bold().green(),
+                    req.method.clone().bold().green(),
+                    "]".bold().green()
+                );
+                let (status, url, result) = self.execute(req).await.unwrap();
                 print!(" {}\n", url.bold().green());
 
+                println!("{} {}", "Status: ".bold().green(), status.bold().green());
                 let pretty_json: Value = serde_json::from_str(&result.as_str()).unwrap();
                 println!("{}", to_string_pretty(&pretty_json).unwrap());
-            },
+            }
             None => {
                 println!("Request not found");
             }
@@ -47,16 +53,16 @@ impl LazyReq {
         if macr.starts_with("$req.") {
             let macro_parsed = &macr.replace("$req.", "");
             let req = self.requests.get(macro_parsed).unwrap();
-            let (_, result) = self.execute(req).await.unwrap();
+            let (_, _, result) = self.execute(req).await.unwrap();
             return (macro_parsed.clone(), result);
         }
 
-        return (String::new(), String::new())
+        return (String::new(), String::new());
     }
 
     #[async_recursion]
     async fn handle_variables_and_hooks(&self, data: String) -> String {
-                let pattern = r"\$[\w.]+";
+        let pattern = r"\$[\w.]+";
         let re = Regex::new(pattern).unwrap();
 
         let mut url = data.clone();
@@ -106,24 +112,26 @@ impl LazyReq {
             }
 
             if !is_variable.is_some() && !is_hook.is_some() {
-                panic!("Variable or hook not found: {}", item.to_string().to_string());
+                panic!(
+                    "Variable or hook not found: {}",
+                    item.to_string().to_string()
+                );
             }
 
             // url = url.replace(&item, &self.variables.get(&item).unwrap());
         }
 
         return url;
-
     }
 
     #[async_recursion]
-    async fn execute(&self, req: &Request) -> Result<(String, String), Box<dyn Error>> {
+    async fn execute(&self, req: &Request) -> Result<(String, String, String), Box<dyn Error>> {
         let url = self.handle_variables_and_hooks(req.path.clone()).await;
 
         let mut headers = req.headers.clone();
         for (key, value) in &req.headers {
             let normalized = self.handle_variables_and_hooks(value.clone()).await;
-            headers.insert(key.clone(),normalized.clone());
+            headers.insert(key.clone(), normalized.clone());
         }
 
         let mut new = Request::new(req.method.clone(), url.clone(), req.body.clone());
@@ -131,41 +139,43 @@ impl LazyReq {
             new.set_headers(headers);
         }
 
-
         let http_method = new.format_method();
         let mut http_headers = HeaderMap::new();
         for (key, value) in new.headers.clone() {
-            http_headers.insert(HeaderName::from_bytes(key.as_bytes()).unwrap(), HeaderValue::from_str(value.as_str()).unwrap());
+            http_headers.insert(
+                HeaderName::from_bytes(key.as_bytes()).unwrap(),
+                HeaderValue::from_str(value.as_str()).unwrap(),
+            );
         }
 
         let client = Client::new();
         let response = client
-                .request(http_method, new.path)
-                .body(new.body)
-                .headers(http_headers)
-                .send().await?;
+            .request(http_method, new.path)
+            .body(new.body)
+            .headers(http_headers)
+            .send()
+            .await?;
 
-       
+        let status = response.status();
+
         let body = response.text().await?;
-        Ok((url, body))
+        Ok((status.to_string(), url, body))
     }
 
     pub fn from_file(&mut self, filename: String) {
         let mut context = "VARS";
         let mut last_id: String = String::new();
         let mut request_body: String = String::new();
-        for line in  fs::read_to_string(filename).unwrap().lines() {
+        for line in fs::read_to_string(filename).unwrap().lines() {
             let mut line = line.to_string();
             if line.trim().starts_with("#") {
                 continue;
             }
             if line.starts_with("VARS") {
                 context = "VARS";
-            }
-            else if line.starts_with("HOOKS") {
+            } else if line.starts_with("HOOKS") {
                 context = "HOOKS";
-            }
-            else if line.starts_with("ID:") {
+            } else if line.starts_with("ID:") {
                 context = "REQUEST";
                 if request_body != "" {
                     let req = self.requests.get_mut(&last_id).unwrap();
@@ -180,53 +190,63 @@ impl LazyReq {
                 }
 
                 if context == "VARS" {
+                    let parts = line.split("=").collect::<Vec<&str>>();
+                    if parts.len() != 2 {
+                        panic!("invalid variable provided {}", line);
+                    }
+                    let mut value = parts[1].trim().to_string();
+                    if value.starts_with("$env.") {
+                        value = env::var(value.replace("$env.", "")).unwrap();
+                    }
+
+                    if value.starts_with('"') && value.ends_with('"')
+                        || value.starts_with("'") && value.ends_with("'")
+                    {
+                        value = value.replace('"', "").replace("'", "");
+                    }
+
+                    self.add_variable(parts[0].trim().to_string(), value);
+                }
+                if context == "HOOKS" {
+                    let parts = line.split("=").collect::<Vec<&str>>();
+                    self.add_hook(parts[0].trim().to_string(), parts[1].trim().to_string());
+                }
+
+                if context == "REQUEST" {
+                    let req = self.requests.get_mut(&last_id).unwrap();
+                    if line.starts_with("H:") {
+                        line = line.replace("H:", "");
                         let parts = line.split("=").collect::<Vec<&str>>();
                         if parts.len() != 2 {
-                            panic!("invalid variable provided {}", line);
+                            panic!("invalid header provided {}", line);
                         }
-                        let mut value = parts[1].trim().to_string();
-                        if value.starts_with("$env.") {
-                            value = env::var(value.replace("$env.", "")).unwrap();
-                        }
-
-                        if value.starts_with('"') && value.ends_with('"') || value.starts_with("'") && value.ends_with("'") {
-                            value = value.replace('"', "").replace("'", "");
-                        }
-
-                        self.add_variable(parts[0].trim().to_string(), value);
-                    }
-                    if context == "HOOKS"  {
-                        let parts = line.split("=").collect::<Vec<&str>>();
-                        self.add_hook(parts[0].trim().to_string(), parts[1].trim().to_string());
+                        let key = parts[0].trim().to_string();
+                        let value = parts[1].trim().to_string();
+                        req.add_header(key, value);
+                        continue;
                     }
 
-                    if context == "REQUEST" {
-                        let req = self.requests.get_mut(&last_id).unwrap();
-                        if line.starts_with("H:") {
-                            line = line.replace("H:", "");
-                            let parts = line.split("=").collect::<Vec<&str>>();
-                            if parts.len() != 2 {
-                                panic!("invalid header provided {}", line);
-                            }
-                            let key = parts[0].trim().to_string();
-                            let value = parts[1].trim().to_string();
-                            req.add_header(key, value);
-                            continue;
+                    if line.starts_with("GET")
+                        || line.starts_with("POST")
+                        || line.starts_with("PUT")
+                        || line.starts_with("DELETE")
+                    {
+                        let parts: Vec<&str> = line.split(" ").collect::<Vec<&str>>();
+                        if parts.len() != 2 {
+                            panic!("invalid request provided {}", line);
                         }
-
-                        if line.starts_with("GET") || line.starts_with("POST") || line.starts_with("PUT") || line.starts_with("DELETE") {
-                            let parts: Vec<&str> = line.split(" ").collect::<Vec<&str>>();
-                            if parts.len() != 2 {
-                                panic!("invalid request provided {}", line);
-                            }
-                            req.set_method(parts[0].trim().to_string());
-                            req.set_path(parts[1].trim().to_string());
-                            continue;
-                        }
-                        
-                        request_body.push_str(&line.trim().to_string());
+                        req.set_method(parts[0].trim().to_string());
+                        req.set_path(parts[1].trim().to_string());
+                        continue;
                     }
+
+                    request_body.push_str(&line.trim().to_string());
                 }
+            }
+        }
+        if request_body != "" {
+            let req = self.requests.get_mut(&last_id).unwrap();
+            req.set_body(request_body);
         }
     }
 

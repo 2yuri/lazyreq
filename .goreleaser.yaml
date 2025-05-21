@@ -15,4 +15,4 @@ builds:
       - aarch64-apple-darwin
     flags:
       - --release
-    skip: false
+    skip: true
