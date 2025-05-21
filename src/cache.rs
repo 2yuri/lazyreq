@@ -1,7 +1,7 @@
 use crate::timest::{add_seconds, get_timestamp, is_older_than};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 pub struct Cache {
@@ -44,7 +44,13 @@ fn find_file(filename: &str, req_id: &str) -> (bool, File) {
     let cache_file = format!("{}/{}", path.clone(), cache_name);
 
     if Path::new(&cache_file).exists() {
-        return (false, File::open(cache_file).unwrap());
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(cache_file)
+            .unwrap();
+
+        return (false, file);
     }
 
     match setup_directories() {
@@ -90,10 +96,13 @@ impl Cache {
         return None;
     }
 
-    pub fn set(&mut self, value: String, expire_in_minutes: u64) {
-        let expired_at = add_seconds(get_timestamp(), expire_in_minutes);
+    pub fn set(&mut self, value: String, expire_in_seconds: u64) {
+        let expired_at = add_seconds(get_timestamp(), expire_in_seconds);
 
-        self.file.write_all(format!("{}\n", expired_at).as_bytes());
-        self.file.write_all(format!("{}\n", value).as_bytes());
+        self.file.set_len(0).unwrap();
+        self.file.seek(SeekFrom::Start(0)).unwrap();
+        self.file
+            .write_all(format!("{}\n{}\n", expired_at, value).as_bytes())
+            .unwrap();
     }
 }
