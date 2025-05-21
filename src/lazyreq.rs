@@ -43,6 +43,8 @@ impl LazyReq {
                     serde_json::from_str(&result.as_str()).unwrap_or(Value::Null);
                 if !pretty_json.is_null() {
                     println!("{}", to_string_pretty(&pretty_json).unwrap());
+                } else {
+                    println!("{}", result.bold().green());
                 }
             }
             None => {
