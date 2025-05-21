@@ -28,10 +28,6 @@ fn setup_directories() -> std::io::Result<PathBuf> {
     let base_dir = get_lazyreq_dir();
 
     let cache_dir = base_dir.join("cache");
-
-    println!("Base directory: {:?}", base_dir);
-    println!("Cache directory: {:?}", cache_dir);
-
     fs::create_dir_all(&cache_dir)?;
 
     Ok(base_dir)
@@ -54,8 +50,8 @@ fn find_file(filename: &str, req_id: &str) -> (bool, File) {
     }
 
     match setup_directories() {
-        Ok(path) => println!("Directories are set up at {:?}", path),
-        Err(e) => eprintln!("Failed to set up directories: {}", e),
+        Ok(_) => {}
+        Err(e) => panic!("Failed to set up directories: {}", e),
     }
 
     return (true, File::create_new(&cache_file).unwrap());

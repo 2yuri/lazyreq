@@ -1,5 +1,6 @@
 use async_recursion::async_recursion;
 use colored::*;
+use core::panic;
 use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
@@ -116,8 +117,7 @@ impl LazyReq {
 
                 for part in parts.iter() {
                     if parsed.get(part).is_none() {
-                        println!("Macro {} not found", part);
-                        return String::new();
+                        panic!("Macro {} not found", replace_value);
                     }
 
                     parsed = parsed.get(part).unwrap().clone();
