@@ -5,7 +5,7 @@ use mime_guess::from_path;
 use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::multipart::{self, Part};
-use reqwest::Client;
+use reqwest::{Client, Url};
 use serde_json::to_string_pretty;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -127,12 +127,6 @@ impl LazyReq {
                 }
 
                 url = url.replace(&replace_value, &parsed.as_str().unwrap())
-
-                // let mut cache_time = 0;
-                // if parts.len() > 1 {
-                //     cache_time = parts[1].parse::<i32>().unwrap();
-                // }
-                // TODO: add cache
             }
 
             let is_variable = self.variables.get(item.as_str());
@@ -190,7 +184,25 @@ impl LazyReq {
             let mut m = multipart::Form::new();
 
             for part in new_multipart.iter() {
-                if part.content.starts_with("file://") {
+                if part.content.starts_with("download://") {
+                    let path_str = part.content.clone().replace("download://", "");
+                    let bytes = reqwest::get(path_str.clone()).await?.bytes().await?;
+                    let file_name = Url::parse(path_str.clone().as_str())
+                        .unwrap()
+                        .path_segments()
+                        .unwrap()
+                        .last()
+                        .unwrap_or("file")
+                        .to_string();
+
+                    let mime = from_path(&path_str.as_str()).first_or_octet_stream();
+
+                    let file_part = Part::bytes(bytes.to_vec())
+                        .file_name(file_name.clone())
+                        .mime_str(mime.as_ref())
+                        .ok();
+                    m = m.part(part.name.clone(), file_part.unwrap());
+                } else if part.content.starts_with("file://") {
                     let path_str = part.content.clone().replace("file://", "");
                     let path = Path::new(&path_str);
                     let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
@@ -305,11 +317,11 @@ impl LazyReq {
                     if line.starts_with("M:") {
                         line = line.replace("M:", "");
                         let parts = line.split("=").collect::<Vec<&str>>();
-                        if parts.len() != 2 {
+                        if parts.len() < 2 {
                             panic!("invalid multipart form provided {}", line);
                         }
                         let key = parts[0].trim().to_string();
-                        let value = parts[1].trim().to_string();
+                        let value = parts[1..].join("=").trim().to_string();
                         req.add_multipart(key.clone(), value);
                         continue;
                     }

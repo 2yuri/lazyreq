@@ -21,12 +21,17 @@ GET $baseURL/$path/users/me
 H: Content-Type = application/json
 H: Authorization = Bearer $login.token
 
-
 ID: update-picture
 PUT $baseURL/$path/users/profile-image
 H: Content-Type = multipart/form-data
 H: Authorization = Bearer $login.token
 M: image = file://./logo.png
+
+ID: update-picture-from-url
+PUT $baseURL/$path/users/profile-image
+H: Content-Type = multipart/form-data
+H: Authorization = Bearer $login.token
+M: image = download://https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS1tsJlbwuBC2jBGT4llDSBftZxNDkGVkI1YQ&s
 
 ID: new
 GET $baseURL/$path/users/$me.id
