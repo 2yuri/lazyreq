@@ -17,5 +17,10 @@ async fn main() {
 
     let mut lazyreq = LazyReq::new();
     lazyreq.from_file(config.filename);
-    lazyreq.do_request(config.target).await;
+    
+    if config.export_curl {
+        lazyreq.export_curl(config.target).await;
+    } else {
+        lazyreq.do_request(config.target).await;
+    }
 }

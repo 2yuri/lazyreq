@@ -60,6 +60,59 @@ impl LazyReq {
         }
     }
 
+    pub async fn export_curl(&self, id: String) {
+        match self.requests.get(&id) {
+            Some(req) => {
+                let curl_command = self.generate_curl_command(req).await;
+                println!("{}", curl_command);
+            }
+            None => {
+                println!("Request not found");
+            }
+        }
+    }
+
+    async fn generate_curl_command(&self, req: &Request) -> String {
+        let url = self.handle_variables_and_hooks(req.path.clone()).await;
+        
+        let mut headers = req.headers.clone();
+        for (key, value) in &req.headers {
+            let normalized = self.handle_variables_and_hooks(value.clone()).await;
+            headers.insert(key.clone(), normalized.clone());
+        }
+
+        let mut curl_parts = vec![format!("curl -X {}", req.method.to_uppercase())];
+        
+        // Add headers
+        for (key, value) in &headers {
+            curl_parts.push(format!("-H \"{}: {}\"", key, value));
+        }
+
+        // Handle multipart data
+        if !req.multipart.is_empty() {
+            for part in &req.multipart {
+                if part.content.starts_with("file://") {
+                    let path_str = part.content.clone().replace("file://", "");
+                    curl_parts.push(format!("-F \"{}=@{}\"", part.name, path_str));
+                } else if part.content.starts_with("download://") {
+                    // For download URLs, we can't easily convert to curl without downloading first
+                    // So we'll just include the URL as a form field
+                    curl_parts.push(format!("-F \"{}={}\"", part.name, part.content));
+                } else {
+                    curl_parts.push(format!("-F \"{}={}\"", part.name, part.content));
+                }
+            }
+        } else if !req.body.is_empty() {
+            // Add body data
+            curl_parts.push(format!("-d '{}'", req.body));
+        }
+
+        // Add URL
+        curl_parts.push(format!("\"{}\"", url));
+
+        curl_parts.join(" \\\n  ")
+    }
+
     #[async_recursion]
     pub async fn handle_macro(&self, macr: String, splits: Vec<&str>) -> (String, String) {
         if macr.starts_with("$req.") {
