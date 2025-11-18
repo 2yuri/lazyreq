@@ -330,6 +330,9 @@ impl LazyReq {
                         || line.starts_with("POST")
                         || line.starts_with("PUT")
                         || line.starts_with("DELETE")
+                        || line.starts_with("PATCH")
+                        || line.starts_with("HEAD")
+                        || line.starts_with("OPTIONS")
                     {
                         let parts: Vec<&str> = line.split(" ").collect::<Vec<&str>>();
                         if parts.len() != 2 {
