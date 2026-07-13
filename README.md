@@ -128,6 +128,7 @@ HOOKS
 | Line | Meaning |
 |---|---|
 | `ID: name` | starts a request block |
+| `DESCRIPTION: text` | optional human-readable description, shown by `--list` and in the editor sidebar |
 | `METHOD url` | `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `HEAD` or `OPTIONS` — must come first |
 | `H: Name = value` | a header |
 | `M: name = value` | a multipart form field (sets up `multipart/form-data`) |

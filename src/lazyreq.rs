@@ -56,11 +56,17 @@ impl LazyReq {
 
         for id in &self.order {
             let req = &self.requests[id];
+            let description = if req.description.is_empty() {
+                "".normal()
+            } else {
+                format!("  — {}", req.description).dimmed()
+            };
             println!(
-                "{:width$}  {:7} {}",
+                "{:width$}  {:7} {}{}",
                 id.bold().green(),
                 req.method,
                 req.path,
+                description,
                 width = width
             );
         }
@@ -551,7 +557,10 @@ impl LazyReq {
                 self.hooks.insert(key, value);
             } else {
                 // context == "REQUEST"
-                if let Some(rest) = line.strip_prefix("H:") {
+                if let Some(rest) = line.strip_prefix("DESCRIPTION:") {
+                    let req = self.requests.get_mut(&last_id).unwrap();
+                    req.set_description(rest.trim().to_string());
+                } else if let Some(rest) = line.strip_prefix("H:") {
                     let (key, value) = split_key_value(rest).ok_or_else(|| {
                         self.parse_error(ln, raw_line, "headers use `H: Name = value`")
                     })?;

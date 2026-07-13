@@ -5,6 +5,7 @@ use reqwest::Method;
 pub struct Request {
     pub method: String,
     pub path: String,
+    pub description: String,
     pub headers: HashMap<String, String>,
     pub body: String,
     pub multipart: Vec<MultiPart>,
@@ -21,6 +22,7 @@ impl Request {
         Request {
             method: "".to_string(),
             path: "".to_string(),
+            description: "".to_string(),
             headers: HashMap::new(),
             body: "".to_string(),
             multipart: Vec::new(),
@@ -49,6 +51,10 @@ impl Request {
             name,
             content: value,
         });
+    }
+
+    pub fn set_description(&mut self, description: String) {
+        self.description = description;
     }
 
     pub fn set_method(&mut self, method: String) {
