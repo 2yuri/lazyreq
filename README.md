@@ -78,6 +78,7 @@ lazyreq <file.lreq> <request-id>          # run a request
 lazyreq <file.lreq> <request-id> --curl   # print it as a curl command instead
 lazyreq <file.lreq> --list                # list every request in the file
 lazyreq import '<curl command>'           # convert a curl command to a request block
+lazyreq --version                         # print the CLI version
 ```
 
 ```sh
