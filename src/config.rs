@@ -3,6 +3,7 @@ pub enum Mode {
     ExportCurl,
     List,
     Import(String),
+    Version,
 }
 
 pub struct Config {
@@ -17,6 +18,14 @@ const USAGE: &str = "usage: lazyreq <file.lreq> <request-id> [--curl]
 
 impl Config {
     pub fn new(args: &[String]) -> Result<Config, String> {
+        if args.iter().any(|a| a == "--version" || a == "-V") {
+            return Ok(Config {
+                filename: String::new(),
+                target: String::new(),
+                mode: Mode::Version,
+            });
+        }
+
         if args.get(1).map(|s| s.as_str()) == Some("import") {
             let command = args[2..].join(" ");
             if command.trim().is_empty() {

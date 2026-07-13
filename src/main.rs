@@ -26,6 +26,11 @@ async fn main() {
 async fn run(args: &[String]) -> Result<(), String> {
     let config = Config::new(args)?;
 
+    if let Mode::Version = config.mode {
+        println!("lazyreq {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     if let Mode::Import(command) = &config.mode {
         print!("{}", import::curl_to_lreq(command)?);
         return Ok(());
@@ -35,7 +40,7 @@ async fn run(args: &[String]) -> Result<(), String> {
     lazyreq.from_file(config.filename)?;
 
     match config.mode {
-        Mode::Import(_) => unreachable!(),
+        Mode::Import(_) | Mode::Version => unreachable!(),
         Mode::List => lazyreq.list(),
         Mode::ExportCurl => lazyreq.export_curl(config.target).await?,
         Mode::Run => lazyreq.do_request(config.target).await?,

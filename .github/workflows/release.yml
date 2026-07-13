@@ -33,3 +33,15 @@ jobs:
           args: release --clean ${{ github.ref_type != 'tag' && '--snapshot' || '' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
+      # Tag runs publish these to the GitHub Release; snapshot runs attach
+      # them to the workflow so PR builds are downloadable too.
+      - name: Upload snapshot artifacts
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lazyreq-snapshot-${{ github.sha }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*_checksums.txt
+          retention-days: 14
