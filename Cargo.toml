@@ -2,6 +2,9 @@
 name = "lazyreq"
 version = "0.2.0"
 edition = "2021"
+license = "MIT"
+description = "A lazy, file-based HTTP client for your terminal"
+repository = "https://github.com/2yuri/lazyreq"
 
 [dependencies]
 regex = "1.10.6"
