@@ -77,6 +77,7 @@ Prefer clicking? There's a [VS Code / Cursor extension](https://github.com/2yuri
 lazyreq <file.lreq> <request-id>          # run a request
 lazyreq <file.lreq> <request-id> --curl   # print it as a curl command instead
 lazyreq <file.lreq> --list                # list every request in the file
+lazyreq import '<curl command>'           # convert a curl command to a request block
 ```
 
 ```sh
@@ -84,6 +85,21 @@ $ lazyreq api.lreq --list
 login  POST    $baseURL/login
 me     GET     $baseURL/users/me
 ```
+
+### Importing from curl
+
+Paste a curl command (e.g. browser devtools → "Copy as cURL") and get a request block back:
+
+```sh
+$ lazyreq import 'curl "https://api.example.com/v1/users" \
+    -H "Authorization: Bearer tok" -d '\''{"name":"yuri"}'\'''
+ID: users
+POST https://api.example.com/v1/users
+H: Authorization = Bearer tok
+{"name":"yuri"}
+```
+
+Append it to a collection with `lazyreq import '...' >> api.lreq`. Supports `-X`, `-H`, `-d`/`--data*`, `-F` (with `@file` → `file://`), `-u` (→ basic auth header), `-b`, `-A`, `-e` and `--url`; literal `$` in values is escaped automatically.
 
 ## The .lreq format
 
@@ -192,7 +208,6 @@ The exit code is 1 on any error, so `.lreq` files behave in scripts.
 
 ## Roadmap
 
-- `lazyreq import '<curl command>'` — convert a pasted curl (e.g. browser devtools "Copy as cURL") into a request block
 - `-v` verbose mode — sent headers, resolved URL, response time
 - Assertions (`A: status = 200`) and a test mode for CI
 - Environment overlays (`VARS dev` / `VARS prod` + `--env`)

@@ -2,6 +2,7 @@ pub enum Mode {
     Run,
     ExportCurl,
     List,
+    Import(String),
 }
 
 pub struct Config {
@@ -11,10 +12,26 @@ pub struct Config {
 }
 
 const USAGE: &str = "usage: lazyreq <file.lreq> <request-id> [--curl]
-       lazyreq <file.lreq> --list";
+       lazyreq <file.lreq> --list
+       lazyreq import '<curl command>'";
 
 impl Config {
     pub fn new(args: &[String]) -> Result<Config, String> {
+        if args.get(1).map(|s| s.as_str()) == Some("import") {
+            let command = args[2..].join(" ");
+            if command.trim().is_empty() {
+                return Err(format!(
+                    "`import` needs a curl command, e.g. lazyreq import 'curl https://api.example.com'\n{}",
+                    USAGE
+                ));
+            }
+            return Ok(Config {
+                filename: String::new(),
+                target: String::new(),
+                mode: Mode::Import(command),
+            });
+        }
+
         let mut mode = Mode::Run;
         let mut filename = String::new();
         let mut target = String::new();
@@ -40,10 +57,7 @@ impl Config {
         }
 
         if !filename.ends_with(".lreq") {
-            return Err(format!(
-                "`{}` is not a .lreq file\n{}",
-                filename, USAGE
-            ));
+            return Err(format!("`{}` is not a .lreq file\n{}", filename, USAGE));
         }
 
         if target.is_empty() && !matches!(mode, Mode::List) {

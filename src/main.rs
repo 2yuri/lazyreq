@@ -8,6 +8,7 @@ use lazyreq::LazyReq;
 mod cache;
 mod config;
 mod functions;
+mod import;
 mod lazyreq;
 mod request;
 mod timest;
@@ -25,10 +26,16 @@ async fn main() {
 async fn run(args: &[String]) -> Result<(), String> {
     let config = Config::new(args)?;
 
+    if let Mode::Import(command) = &config.mode {
+        print!("{}", import::curl_to_lreq(command)?);
+        return Ok(());
+    }
+
     let mut lazyreq = LazyReq::new();
     lazyreq.from_file(config.filename)?;
 
     match config.mode {
+        Mode::Import(_) => unreachable!(),
         Mode::List => lazyreq.list(),
         Mode::ExportCurl => lazyreq.export_curl(config.target).await?,
         Mode::Run => lazyreq.do_request(config.target).await?,
