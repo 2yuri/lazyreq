@@ -3,6 +3,7 @@ version: 2
 before:
   hooks:
     - rustup default stable
+    - rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-gnu
     - cargo install --locked cargo-zigbuild
     - cargo fetch --locked
 
@@ -22,7 +23,7 @@ builds:
     skip: false
 
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_
@@ -32,7 +33,7 @@ archives:
     # use zip for windows archives
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 
 universal_binaries:
   - replace: true

@@ -2,7 +2,7 @@ use crate::timest::{add_seconds, get_timestamp, is_older_than};
 use std::fs::{self, File, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{self, BufRead, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub struct Cache {
     file: File,
@@ -15,68 +15,52 @@ fn calculate_cache_name(filename: &str, req_id: &str) -> String {
     filename.hash(&mut hasher);
     req_id.hash(&mut hasher);
 
-    return format!("{:x}", hasher.finish());
+    format!("{:x}", hasher.finish())
 }
 
-fn get_lazyreq_dir() -> PathBuf {
-    home::home_dir()
-        .expect("Failed to retrieve home directory")
+fn cache_dir() -> Result<PathBuf, String> {
+    let dir = home::home_dir()
+        .ok_or("cannot determine home directory for the cache".to_string())?
         .join(".lazyreq")
-}
+        .join("cache");
 
-fn setup_directories() -> std::io::Result<PathBuf> {
-    let base_dir = get_lazyreq_dir();
+    fs::create_dir_all(&dir)
+        .map_err(|e| format!("cannot create cache directory `{}`: {}", dir.display(), e))?;
 
-    let cache_dir = base_dir.join("cache");
-    fs::create_dir_all(&cache_dir)?;
-
-    Ok(base_dir)
-}
-
-fn find_file(filename: &str, req_id: &str) -> (bool, File) {
-    let cache_name = calculate_cache_name(filename, req_id);
-
-    let path: String = get_lazyreq_dir().to_string_lossy().to_string() + "/cache";
-    let cache_file = format!("{}/{}", path.clone(), cache_name);
-
-    if Path::new(&cache_file).exists() {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(cache_file)
-            .unwrap();
-
-        return (false, file);
-    }
-
-    match setup_directories() {
-        Ok(_) => {}
-        Err(e) => panic!("Failed to set up directories: {}", e),
-    }
-
-    return (true, File::create_new(&cache_file).unwrap());
+    Ok(dir)
 }
 
 impl Cache {
-    pub fn new(filename: &str, req_id: &str) -> Cache {
-        let (is_new, f) = find_file(filename, req_id);
-        if is_new {
-            return Cache {
-                file: f,
+    pub fn new(filename: &str, req_id: &str) -> Result<Cache, String> {
+        let path = cache_dir()?.join(calculate_cache_name(filename, req_id));
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path)
+            .map_err(|e| format!("cannot open cache file `{}`: {}", path.display(), e))?;
+
+        // A missing or malformed cache file just means "no cached value".
+        let reader = io::BufReader::new(file.try_clone().map_err(|e| e.to_string())?);
+        let mut lines = reader.lines();
+        let expire = lines
+            .next()
+            .and_then(|l| l.ok())
+            .and_then(|l| l.parse::<u64>().ok());
+        let data = lines.next().and_then(|l| l.ok());
+
+        match (expire, data) {
+            (Some(expire), Some(data)) => Ok(Cache {
+                file,
+                data: Some(data),
+                expire,
+            }),
+            _ => Ok(Cache {
+                file,
                 data: None,
                 expire: 0,
-            };
-        }
-
-        let reader = io::BufReader::new(f.try_clone().unwrap());
-        let mut lines = reader.lines();
-        let first_line = lines.next().unwrap();
-        let second_line = lines.next().unwrap();
-
-        Cache {
-            file: f,
-            data: Some(second_line.unwrap().to_string()),
-            expire: first_line.unwrap().to_string().parse::<u64>().unwrap(),
+            }),
         }
     }
 
@@ -89,16 +73,19 @@ impl Cache {
             return self.data.clone();
         }
 
-        return None;
+        None
     }
 
-    pub fn set(&mut self, value: String, expire_in_seconds: u64) {
+    pub fn set(&mut self, value: String, expire_in_seconds: u64) -> Result<(), String> {
         let expired_at = add_seconds(get_timestamp(), expire_in_seconds);
 
-        self.file.set_len(0).unwrap();
-        self.file.seek(SeekFrom::Start(0)).unwrap();
-        self.file
-            .write_all(format!("{}\n{}\n", expired_at, value).as_bytes())
-            .unwrap();
+        let mut write = || -> io::Result<()> {
+            self.file.set_len(0)?;
+            self.file.seek(SeekFrom::Start(0))?;
+            self.file
+                .write_all(format!("{}\n{}\n", expired_at, value).as_bytes())
+        };
+
+        write().map_err(|e| format!("cannot write cache: {}", e))
     }
 }

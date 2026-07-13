@@ -19,7 +19,7 @@ pub struct MultiPart {
 impl Request {
     pub fn default() -> Request {
         Request {
-            method: "NOT SET".to_string(),
+            method: "".to_string(),
             path: "".to_string(),
             headers: HashMap::new(),
             body: "".to_string(),
@@ -40,16 +40,6 @@ impl Request {
         }
     }
 
-    pub fn new(method: String, path: String, body: String, multipart: Vec<MultiPart>) -> Request {
-        Request {
-            method,
-            path,
-            headers: HashMap::new(),
-            body,
-            multipart,
-        }
-    }
-
     pub fn add_header(&mut self, name: String, value: String) {
         self.headers.insert(name, value);
     }
@@ -59,10 +49,6 @@ impl Request {
             name,
             content: value,
         });
-    }
-
-    pub fn set_headers(&mut self, headers: HashMap<String, String>) {
-        self.headers = headers;
     }
 
     pub fn set_method(&mut self, method: String) {
