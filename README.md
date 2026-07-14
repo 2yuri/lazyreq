@@ -156,6 +156,34 @@ Failed sends (DNS, refused connections, timeouts) are recorded too, with the err
 
 The compact-by-default output is deliberate: list views are one line per run, response bodies are summarized as shapes (`{token: str(212), user: {id: int}}`), and full payloads or headers appear only behind explicit flags (`-v`, `--show-headers`). The agent escalates detail only when it needs it.
 
+### Benchmarks
+
+Measured with [`bench/bench.py`](bench/bench.py): real `curl` and `lazyreq` subprocesses drive a live local API through agent workflows, and everything the agent must **write** (commands) and **read** (output) is counted with tiktoken. Reproduce with `python3 bench/bench.py` (needs `lazyreq` on `PATH`; `pip install tiktoken` for exact counts).
+
+| workflow | curl | lazyreq | savings |
+|---|--:|--:|--:|
+| author the `.lreq` collection (one-time) | 0 | 368 | — |
+| cold start: login + authenticated GET | 563 | 198 | **65%** |
+| repeat the same GET ×5 | 1,605 | 990 | **38%** |
+| new session: recall what an endpoint returns | 1,669 | 157 | **91%** |
+| debug: inspect a failing POST | 658 | 142 | **78%** |
+| reproduce a failed run exactly (fuzzed payload) | 1,007 | 114 | **89%** |
+| send an HMAC-signed webhook | 206 | 42 | **80%** |
+| recover from an expired auth token | 757 | 198 | **74%** |
+| **total** | **6,465** | **2,209** | **66%** |
+
+Weighted by price (generated tokens cost ~5× ingested ones), the overall saving is **76%** — lazyreq's advantage concentrates in the expensive direction: a full authenticated flow is 7 generated tokens instead of 225.
+
+Recall cost is where the design shows most. Asking "what does this endpoint return?" in a fresh session costs curl a re-auth plus the full payload; lazyreq answers from history with a constant-size shape summary:
+
+| response size | curl | lazyreq | savings |
+|---|--:|--:|--:|
+| /orders, 5 items (1.7 KB) | 1,060 | 159 | 85% |
+| /orders, 50 items (16.5 KB) | 6,565 | 159 | 98% |
+| /orders, 200 items (66.5 KB) | 25,015 | **159** | **99%** |
+
+curl's recall grows linearly with the payload; lazyreq's stays flat at 159 tokens. At 200 items, a single curl recall costs more than the entire eight-workflow lazyreq suite — and the one-time authoring cost (368 tokens) is repaid about twice over by the first workflow.
+
 **Skill.** This repo ships a ready-made skill for Claude Code and compatible agents at [`skills/lazyreq/`](skills/lazyreq/) — it teaches the agent the `.lreq` format, the CLI, and the history-first workflow. Install it by copying (or symlinking) the folder:
 
 ```sh
@@ -261,7 +289,7 @@ Failures are reported with context, not stack traces:
 
 ```
 error: invalid line 14 of api.lreq:
-  H: X-Loop-Signature "abc..."
+  H: X-Signature "abc..."
   hint: headers use `H: Name = value`
 
 error: request `me` failed:
