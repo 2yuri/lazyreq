@@ -23,6 +23,8 @@ lazyreq api.lreq login
 - **Your API collection is a text file.** It lives in your repo, diffs like code, and works in CI. No GUI, no cloud workspace, no JSON exports.
 - **Auth that gets out of the way.** Hooks run your login request automatically, extract the token from its JSON, and cache it — every other request just says `$login.token`.
 - **Sign, fuzz, generate.** Built-in `$hmac()`, `$uuid()`, `$fuzz_str()` and `$fuzz_int()` cover webhook signatures and quick fuzzing without leaving the file.
+- **Every run is remembered.** An encrypted local history records what was sent and what came back — query it with `--history` instead of re-running requests.
+- **Built for AI agents too.** Compact, structured output and persistent memory make it dramatically more token-efficient than curl for LLM workflows ([see below](#lazyreq-for-llm-agents)).
 - **Escape hatch included.** Any request exports as a ready-to-paste `curl` command.
 
 ## Quick start
@@ -77,6 +79,8 @@ Prefer clicking? There's a [VS Code / Cursor extension](https://github.com/2yuri
 lazyreq <file.lreq> <request-id>          # run a request
 lazyreq <file.lreq> <request-id> --curl   # print it as a curl command instead
 lazyreq <file.lreq> --list                # list every request in the file
+lazyreq <file.lreq> --history             # past runs of every request in the file
+lazyreq <file.lreq> <request-id> --history  # past runs of one request
 lazyreq import '<curl command>'           # convert a curl command to a request block
 lazyreq --version                         # print the CLI version
 ```
@@ -102,6 +106,52 @@ H: Authorization = Bearer tok
 
 Append it to a collection with `lazyreq import '...' >> api.lreq`. Supports `-X`, `-H`, `-d`/`--data*`, `-F` (with `@file` → `file://`), `-u` (→ basic auth header), `-b`, `-A`, `-e` and `--url`; literal `$` in values is escaped automatically.
 
+## Run history
+
+Every executed request — including hook-triggered logins — is recorded into an encrypted history under `~/.lazyreq/history/`, keyed by the file's absolute path. Query it instead of re-running things:
+
+```sh
+$ lazyreq api.lreq --history
+2026-07-13 21:04:12  login  POST    200     3ms  body:76b  headers:1
+2026-07-13 21:04:12  me     GET     200     1ms  body:83b  headers:1
+
+$ lazyreq api.lreq login --history --last 1
+2026-07-13 21:04:12  login  POST    200     3ms  body:76b  headers:1
+    {token: str(212), user: {email: str(14), id: int}}
+```
+
+The single-request view summarizes each response as a **JSON shape** — keys and types instead of values — so you (or an AI agent) can see what an endpoint returns without dumping payloads. Escalate detail only when needed:
+
+```sh
+lazyreq api.lreq login --history -v               # resolved URL, request body, full response
+lazyreq api.lreq login --history -v --show-headers  # + the actual request headers
+lazyreq api.lreq --history --failed               # only non-2xx and transport errors
+lazyreq api.lreq --history --status 401           # only a specific status
+lazyreq api.lreq --history --success --last 5     # 2xx only, most recent 5
+```
+
+Failed sends (DNS, refused connections, timeouts) are recorded too, with the error message in place of a body. The newest 20 runs per request id are kept; `--curl` and `--list` execute nothing and record nothing.
+
+**Encryption.** History and the hook cache are gzipped and encrypted at rest (XChaCha20-Poly1305) with a machine key auto-generated at `~/.lazyreq/key` (mode 0600). Set `LAZYREQ_KEY` to use your own key instead — useful in CI or to share history between machines. Responses often contain tokens and personal data; encrypting them means a synced home directory, a backup, or a stray `cat` can't leak what your APIs returned.
+
+## lazyreq for LLM agents
+
+`.lreq` files were designed to be the API memory an AI coding agent doesn't have. If you let an agent (Claude Code, Cursor, ...) test APIs with raw `curl`, you pay three taxes:
+
+1. **Repetition tax.** Every curl invocation re-states the base URL, headers, auth token and body — hundreds of tokens each time, assembled from scratch. With lazyreq the collection is written once; afterwards a request is `lazyreq api.lreq me` — a handful of tokens, no matter how complex the request.
+2. **Auth tax.** With curl, the agent must run the login call, read the token out of the response *into its context window* (where it's now permanently transcribed), and paste it into every following command. lazyreq hooks resolve `$login.token` internally — the token flows from response to header without ever entering the conversation, and the TTL cache means login isn't hammered.
+3. **Context-loss tax.** An agent's memory dies with its session (or earlier, when the conversation is compacted). Yesterday's "what did that endpoint return?" is gone, so agents re-run requests — including unsafe POSTs — just to re-learn what they already knew. lazyreq's history survives on disk: a fresh session runs `--history` and gets back status, latency and the response's JSON shape in ~30 tokens, instead of a 3,000-token payload dump or a live re-execution.
+
+The compact-by-default output is deliberate: list views are one line per run, response bodies are summarized as shapes (`{token: str(212), user: {id: int}}`), and full payloads or headers appear only behind explicit flags (`-v`, `--show-headers`). The agent escalates detail only when it needs it.
+
+**Skill.** This repo ships a ready-made skill for Claude Code and compatible agents at [`skills/lazyreq/`](skills/lazyreq/) — it teaches the agent the `.lreq` format, the CLI, and the history-first workflow. Install it by copying (or symlinking) the folder:
+
+```sh
+cp -r skills/lazyreq ~/.claude/skills/          # user-wide
+# or per project:
+cp -r skills/lazyreq your-project/.claude/skills/
+```
+
 ## The .lreq format
 
 A file has three kinds of sections: `VARS`, `HOOKS`, and one block per request starting with `ID:`.
@@ -122,7 +172,7 @@ HOOKS
   login = $req.login 30
 ```
 
-`$req.<id>` names the request to run; the optional number is a cache TTL in seconds. Cached responses live in `~/.lazyreq/cache/` keyed by (file, request id), so a login token is fetched once and reused until it expires. Without a TTL the hook runs on every use.
+`$req.<id>` names the request to run; the optional number is a cache TTL in seconds. Cached responses live encrypted in `~/.lazyreq/cache/`, keyed by the file's absolute path + request id, so a login token is fetched once and reused until it expires. Without a TTL the hook runs on every use.
 
 ### Requests
 
@@ -210,7 +260,6 @@ The exit code is 1 on any error, so `.lreq` files behave in scripts.
 
 ## Roadmap
 
-- `-v` verbose mode — sent headers, resolved URL, response time
 - Assertions (`A: status = 200`) and a test mode for CI
 - Environment overlays (`VARS dev` / `VARS prod` + `--env`)
 
@@ -220,6 +269,7 @@ Ideas and PRs welcome.
 
 ```sh
 cargo build
+cargo test
 cargo run -- example.lreq --list
 ```
 

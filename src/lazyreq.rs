@@ -14,7 +14,9 @@ use std::{env, fs};
 
 use crate::cache::Cache;
 use crate::functions;
+use crate::history;
 use crate::request::Request;
+use crate::timest::get_timestamp;
 
 const MAX_DEPTH: usize = 16;
 const TOKEN_PATTERN: &str = r"\$\$|\$[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*(?:\([^)]*\))?";
@@ -79,7 +81,7 @@ impl LazyReq {
         ))?;
 
         let (status, url, result) = self
-            .execute(req, 0)
+            .execute(&id, req, 0)
             .await
             .map_err(|e| format!("request `{}` failed:\n  {}", id, e))?;
 
@@ -350,7 +352,7 @@ impl LazyReq {
         ))?;
 
         let (status, _, result) = self
-            .execute(req, depth + 1)
+            .execute(req_id, req, depth + 1)
             .await
             .map_err(|e| format!("hook `{}` (request `{}`) failed: {}", name, req_id, e))?;
 
@@ -406,7 +408,12 @@ impl LazyReq {
     }
 
     #[async_recursion]
-    async fn execute(&self, req: &Request, depth: usize) -> Result<(String, String, String), String> {
+    async fn execute(
+        &self,
+        id: &str,
+        req: &Request,
+        depth: usize,
+    ) -> Result<(String, String, String), String> {
         let prepared = self.prepare(req, depth).await?;
 
         let mut http_headers = HeaderMap::new();
@@ -481,10 +488,49 @@ impl LazyReq {
             None => request.body(prepared.body.clone()),
         };
 
-        let response = request.send().await.map_err(|e| describe(&e))?;
-        let status = response.status();
-        let body = response.text().await.map_err(|e| describe(&e))?;
+        let record = |status: u16, ms: u64, resp_body: &str, error: Option<String>| {
+            history::record(
+                &self.filename,
+                history::Record {
+                    v: 1,
+                    ts: get_timestamp(),
+                    id: id.to_string(),
+                    method: req.method.to_uppercase(),
+                    url: prepared.url.clone(),
+                    status,
+                    ms,
+                    req_headers: prepared.headers.clone(),
+                    req_body: prepared.body.clone(),
+                    resp_body: resp_body.to_string(),
+                    error,
+                },
+            );
+        };
 
+        let started = std::time::Instant::now();
+        let response = request.send().await;
+        let ms = started.elapsed().as_millis() as u64;
+
+        let response = match response {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = describe(&e);
+                record(0, ms, "", Some(msg.clone()));
+                return Err(msg);
+            }
+        };
+
+        let status = response.status();
+        let body = match response.text().await {
+            Ok(b) => b,
+            Err(e) => {
+                let msg = describe(&e);
+                record(status.as_u16(), ms, "", Some(msg.clone()));
+                return Err(msg);
+            }
+        };
+
+        record(status.as_u16(), ms, &body, None);
         Ok((status.to_string(), prepared.url, body))
     }
 
@@ -676,5 +722,141 @@ fn describe(e: &reqwest::Error) -> String {
     match root {
         Some(cause) if !msg.contains(&cause) => format!("{}: {}", msg, cause),
         _ => msg,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+
+    fn load(content: &str) -> Result<LazyReq, String> {
+        let path = std::env::temp_dir().join(format!("lazyreq-test-{}.lreq", uuid::Uuid::new_v4()));
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+
+        let mut lazyreq = LazyReq::new();
+        let result = lazyreq.from_file(path.to_string_lossy().to_string());
+        let _ = fs::remove_file(&path);
+        result.map(|_| lazyreq)
+    }
+
+    const DEMO: &str = "VARS
+  baseURL = http://localhost:8080
+  quoted = \"with spaces\"
+
+HOOKS
+  login = $req.login 30
+
+ID: login
+POST $baseURL/login
+H: Content-Type = application/json
+{\"email\": \"a@b.c\"}
+
+ID: me
+DESCRIPTION: Current user
+GET $baseURL/users/me
+H: Authorization = Bearer $login.token
+";
+
+    #[test]
+    fn parses_vars_hooks_and_requests() {
+        let lazyreq = load(DEMO).unwrap();
+
+        assert_eq!(lazyreq.variables["baseURL"], "http://localhost:8080");
+        assert_eq!(lazyreq.variables["quoted"], "with spaces"); // quotes stripped
+        assert_eq!(lazyreq.hooks["login"], "$req.login 30");
+        assert_eq!(lazyreq.order, vec!["login", "me"]);
+
+        let login = &lazyreq.requests["login"];
+        assert_eq!(login.method, "POST");
+        assert_eq!(login.path, "$baseURL/login");
+        assert_eq!(login.body, "{\"email\": \"a@b.c\"}");
+
+        let me = &lazyreq.requests["me"];
+        assert_eq!(me.description, "Current user");
+        assert_eq!(me.headers["Authorization"], "Bearer $login.token");
+    }
+
+    #[test]
+    fn parse_errors_carry_line_numbers_and_hints() {
+        let err = load("ID: a\nGET http://x.dev\n\nID: a\nGET http://x.dev\n").err().unwrap();
+        assert!(err.contains("duplicate request id `a`"));
+        assert!(err.contains("line 4"));
+
+        let err = load("ID: a\nsome body before method\n").err().unwrap();
+        assert!(err.contains("needs a `METHOD url` line"));
+
+        let err = load("ID: a\n").err().unwrap();
+        assert!(err.contains("no `METHOD url` line"));
+
+        let err = load("ID:\nGET http://x.dev\n").err().unwrap();
+        assert!(err.contains("requests need an id"));
+    }
+
+    #[tokio::test]
+    async fn interpolates_vars_env_and_escapes() {
+        let lazyreq = load(DEMO).unwrap();
+
+        let url = lazyreq
+            .interpolate("$baseURL/users?q=$quoted", true, None, 0)
+            .await
+            .unwrap();
+        assert_eq!(url, "http://localhost:8080/users?q=with spaces");
+
+        std::env::set_var("LAZYREQ_TEST_TOKEN", "t-123");
+        let header = lazyreq
+            .interpolate("Bearer $env.LAZYREQ_TEST_TOKEN", true, None, 0)
+            .await
+            .unwrap();
+        assert_eq!(header, "Bearer t-123");
+
+        let literal = lazyreq.interpolate("costs $$5", true, None, 0).await.unwrap();
+        assert_eq!(literal, "costs $5");
+    }
+
+    #[tokio::test]
+    async fn strict_and_lenient_unknown_tokens() {
+        let lazyreq = load(DEMO).unwrap();
+
+        // URLs and headers reject unknown tokens...
+        assert!(lazyreq.interpolate("$nope", true, None, 0).await.is_err());
+        // ...bodies pass them through so JSON dollar-words keep working
+        let body = lazyreq
+            .interpolate("{\"filter\": {\"$gte\": 5}}", false, None, 0)
+            .await
+            .unwrap();
+        assert_eq!(body, "{\"filter\": {\"$gte\": 5}}");
+    }
+
+    #[tokio::test]
+    async fn body_token_resolves_for_signing() {
+        let lazyreq = load(DEMO).unwrap();
+
+        let signed = lazyreq
+            .interpolate("sig of $body", true, Some("{\"a\":1}"), 0)
+            .await
+            .unwrap();
+        assert_eq!(signed, "sig of {\"a\":1}");
+        // ...but is an error where no body exists yet
+        assert!(lazyreq.interpolate("$body", true, None, 0).await.is_err());
+    }
+
+    #[test]
+    fn split_key_value_splits_on_first_equals_only() {
+        assert_eq!(
+            split_key_value("Authorization = abc=def=="),
+            Some(("Authorization".to_string(), "abc=def==".to_string()))
+        );
+        assert_eq!(split_key_value("no separator"), None);
+        assert_eq!(split_key_value("two words = x"), None);
+    }
+
+    #[test]
+    fn strip_quotes_removes_one_matching_pair() {
+        assert_eq!(strip_quotes("\"hello\""), "hello");
+        assert_eq!(strip_quotes("'hello'"), "hello");
+        assert_eq!(strip_quotes("\"mismatched'"), "\"mismatched'");
+        assert_eq!(strip_quotes("\"\"inner\"\""), "\"inner\"");
     }
 }

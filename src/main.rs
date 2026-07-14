@@ -8,10 +8,12 @@ use lazyreq::LazyReq;
 mod cache;
 mod config;
 mod functions;
+mod history;
 mod import;
 mod lazyreq;
 mod request;
 mod timest;
+mod vault;
 
 #[tokio::main]
 async fn main() {
@@ -36,11 +38,18 @@ async fn run(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
 
+    if let Mode::History(opts) = &config.mode {
+        // History only needs the file's identity, not a successful parse —
+        // past runs stay readable even while the file is mid-edit.
+        let id = (!config.target.is_empty()).then_some(config.target.as_str());
+        return history::show(&config.filename, id, opts);
+    }
+
     let mut lazyreq = LazyReq::new();
     lazyreq.from_file(config.filename)?;
 
     match config.mode {
-        Mode::Import(_) | Mode::Version => unreachable!(),
+        Mode::Import(_) | Mode::Version | Mode::History(_) => unreachable!(),
         Mode::List => lazyreq.list(),
         Mode::ExportCurl => lazyreq.export_curl(config.target).await?,
         Mode::Run => lazyreq.do_request(config.target).await?,
