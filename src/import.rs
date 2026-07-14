@@ -129,11 +129,22 @@ pub fn curl_to_lreq(command: &str) -> Result<String, String> {
         out.push_str(&format!("M: {} = {}\n", name, escape(value)));
     }
     if !body_parts.is_empty() {
-        out.push_str(&body_parts.join("&"));
+        out.push_str(&prettify_body(&body_parts.join("&")));
         out.push('\n');
     }
 
     Ok(out)
+}
+
+/// JSON bodies come out of "Copy as cURL" compacted onto one line; reformat
+/// them so the .lreq block is readable. Anything that isn't JSON (form
+/// payloads, plain text) is left untouched.
+fn prettify_body(body: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .filter(|v| v.is_object() || v.is_array())
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| body.to_string())
 }
 
 /// `$` is special in .lreq strict contexts (URLs, headers, multipart), so
@@ -189,6 +200,19 @@ fn shell_split(input: &str) -> Result<Vec<String>, String> {
                 // A backslash at end of line is a line continuation.
                 match chars.next() {
                     Some('\n') | None => {}
+                    Some('\r') => {
+                        // Windows line continuation: \ + CRLF.
+                        if chars.peek() == Some(&'\n') {
+                            chars.next();
+                        }
+                    }
+                    Some(' ' | '\t') if !has_word => {
+                        // A continuation backslash with trailing whitespace,
+                        // or one whose newline was eaten by a single-line
+                        // paste (e.g. an editor input box): a standalone
+                        // whitespace-only word is never meaningful in a curl
+                        // command, so drop it instead of failing.
+                    }
                     Some(next) => {
                         current.push(next);
                         has_word = true;
@@ -255,4 +279,59 @@ fn shell_split(input: &str) -> Result<Vec<String>, String> {
     }
 
     Ok(words)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imports_a_multiline_curl_with_continuations() {
+        let block = curl_to_lreq(
+            "curl -X POST \\\n  -H \"Content-Type: application/json\" \\\n  https://api.x.dev/users",
+        )
+        .unwrap();
+        assert!(block.contains("ID: users"));
+        assert!(block.contains("POST https://api.x.dev/users"));
+        assert!(block.contains("H: Content-Type = application/json"));
+    }
+
+    #[test]
+    fn tolerates_continuations_flattened_by_a_single_line_paste() {
+        // Pasting a multiline command into a single-line input eats the
+        // newlines, leaving `\ ` between words.
+        let block = curl_to_lreq("curl -X POST \\ https://foo.com").unwrap();
+        assert!(block.contains("POST https://foo.com"));
+
+        // Trailing whitespace after the continuation backslash.
+        let block = curl_to_lreq("curl -X POST \\ \nhttps://foo.com").unwrap();
+        assert!(block.contains("POST https://foo.com"));
+
+        // Windows CRLF continuations.
+        let block = curl_to_lreq("curl -X POST \\\r\nhttps://foo.com").unwrap();
+        assert!(block.contains("POST https://foo.com"));
+    }
+
+    #[test]
+    fn escaped_spaces_inside_words_still_work() {
+        let block = curl_to_lreq("curl https://x.dev -F file=@my\\ photo.png").unwrap();
+        assert!(block.contains("M: file = file://my photo.png"));
+    }
+
+    #[test]
+    fn json_bodies_are_pretty_printed() {
+        let block =
+            curl_to_lreq(r#"curl https://x.dev/orders -d '{"shop_id": 13733,"id": 12312}'"#)
+                .unwrap();
+        assert!(block.ends_with("{\n  \"shop_id\": 13733,\n  \"id\": 12312\n}\n"));
+    }
+
+    #[test]
+    fn non_json_bodies_are_left_alone() {
+        let block = curl_to_lreq("curl https://x.dev -d a=1 -d b=2").unwrap();
+        assert!(block.ends_with("a=1&b=2\n"));
+
+        let block = curl_to_lreq(r#"curl https://x.dev -d '"just a string"'"#).unwrap();
+        assert!(block.ends_with("\"just a string\"\n"));
+    }
 }

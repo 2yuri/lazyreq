@@ -326,7 +326,7 @@ mod tests {
         let body = r#"{"token": "abcdefgh", "user": {"id": 7, "roles": ["admin", "dev"]}, "ok": true, "score": 1.5, "gone": null}"#;
         assert_eq!(
             shape_of(body),
-            "{gone: null, ok: bool, score: float, token: str(8), user: {id: int, roles: [2 × str(5)]}}"
+            "{token: str(8), user: {id: int, roles: [2 × str(5)]}, ok: bool, score: float, gone: null}"
         );
         assert_eq!(shape_of("[]"), "[]");
         assert_eq!(shape_of("not json at all"), "text(15)");
