@@ -29,7 +29,13 @@ lazyreq api.lreq login
 
 ## Quick start
 
-**1.** Install — grab a binary for macOS (universal), Linux (x86_64/arm64) or Windows from the [releases page](https://github.com/2yuri/lazyreq/releases) and put it on your `PATH`, or build with cargo:
+**1.** Install:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/2yuri/lazyreq/main/install.sh | bash
+```
+
+Detects your platform, verifies checksums, and installs the latest release to `~/.local/bin` (override with `LAZYREQ_INSTALL_DIR`; pin a version with `VERSION=v0.2.0`). Or grab a binary for macOS (universal), Linux (x86_64/arm64) or Windows from the [releases page](https://github.com/2yuri/lazyreq/releases), or build with cargo:
 
 ```sh
 cargo install --git https://github.com/2yuri/lazyreq
