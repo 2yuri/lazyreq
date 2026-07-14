@@ -5,6 +5,9 @@ pub enum Mode {
     History(HistoryOpts),
     Retry(String),
     Import(String),
+    /// Interactive terminal UI; the path is the directory to scan for .lreq
+    /// files (defaults to the current directory).
+    Tui(Option<String>),
     Version,
 }
 
@@ -31,7 +34,9 @@ pub struct Config {
     pub mode: Mode,
 }
 
-const USAGE: &str = "usage: lazyreq <file.lreq> <request-id> [--curl]
+const USAGE: &str = "usage: lazyreq                      # interactive UI, scans the current directory
+       lazyreq --path <dir>         # interactive UI, scans <dir>
+       lazyreq <file.lreq> <request-id> [--curl]
        lazyreq <file.lreq> --list
        lazyreq <file.lreq> [request-id] --history [--last N] [-v] [--show-headers] [--req RUN-ID] [--success|--failed|--status CODE]
        lazyreq <file.lreq> --retry <run-id>
@@ -68,6 +73,7 @@ impl Config {
 
         let mut history = false;
         let mut retry: Option<String> = None;
+        let mut scan_path: Option<String> = None;
         let mut opts = HistoryOpts {
             last: None,
             verbose: false,
@@ -102,6 +108,8 @@ impl Config {
                 history = true;
             } else if arg == "--retry" {
                 retry = Some(value_of("--retry")?);
+            } else if arg == "--path" {
+                scan_path = Some(value_of("--path")?);
             } else if arg == "--req" {
                 opts.req = Some(value_of("--req")?);
             } else if arg == "--last" {
@@ -136,6 +144,33 @@ impl Config {
             }
         }
 
+        if filename.is_empty() {
+            // No file → interactive UI, as long as no file-scoped flags came along.
+            let file_flags = history
+                || retry.is_some()
+                || !matches!(mode, Mode::Run)
+                || opts.last.is_some()
+                || opts.verbose
+                || opts.show_headers
+                || opts.req.is_some()
+                || opts.filter != HistoryFilter::All;
+            if file_flags {
+                return Err(USAGE.to_string());
+            }
+            return Ok(Config {
+                filename: String::new(),
+                target: String::new(),
+                mode: Mode::Tui(scan_path),
+            });
+        }
+
+        if let Some(path) = scan_path {
+            return Err(format!(
+                "`--path {}` opens the interactive UI and cannot be combined with a file\n{}",
+                path, USAGE
+            ));
+        }
+
         if history {
             if !matches!(mode, Mode::Run) || retry.is_some() {
                 return Err(format!(
@@ -168,10 +203,6 @@ impl Config {
                 ));
             }
             mode = Mode::Retry(run_id);
-        }
-
-        if filename.is_empty() {
-            return Err(USAGE.to_string());
         }
 
         if !filename.ends_with(".lreq") {
@@ -297,6 +328,28 @@ mod tests {
     #[test]
     fn non_lreq_files_are_rejected() {
         assert!(parse(&["api.yaml", "login"]).is_err());
+    }
+
+    #[test]
+    fn no_args_opens_the_tui() {
+        assert!(matches!(parse(&[]).unwrap().mode, Mode::Tui(None)));
+    }
+
+    #[test]
+    fn path_scans_a_directory_in_tui_mode() {
+        let config = parse(&["--path", "~/projects"]).unwrap();
+        assert!(matches!(config.mode, Mode::Tui(Some(p)) if p == "~/projects"));
+
+        assert!(parse(&["--path"]).is_err()); // missing value
+        assert!(parse(&["api.lreq", "login", "--path", "~"]).is_err()); // not with a file
+    }
+
+    #[test]
+    fn file_scoped_flags_without_a_file_are_rejected() {
+        assert!(parse(&["--history"]).is_err());
+        assert!(parse(&["--list"]).is_err());
+        assert!(parse(&["--retry", "a3f2c1d0"]).is_err());
+        assert!(parse(&["-v"]).is_err());
     }
 
     #[test]

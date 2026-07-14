@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 const KEEP_PER_ID: usize = 20;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Record {
     pub v: u8,
     /// Unique id of this run (8 hex chars), addressable via --req / --retry.
@@ -47,6 +47,11 @@ pub fn new_run_id() -> String {
 pub fn find(filename: &str, req: &str) -> Result<Option<Record>, String> {
     let path = history_path(filename)?;
     Ok(load(&path).into_iter().find(|r| r.req == req))
+}
+
+/// All recorded runs for a file, oldest first (empty on any storage issue).
+pub fn all(filename: &str) -> Vec<Record> {
+    history_path(filename).map(|p| load(&p)).unwrap_or_default()
 }
 
 fn history_path(filename: &str) -> Result<PathBuf, String> {
@@ -228,7 +233,7 @@ fn indent(text: &str, spaces: usize) -> String {
 
 /// Token-frugal structural summary of a response body: keys and types
 /// instead of values, e.g. `{token: str(212), user: {id: str, roles: [2 × str]}}`.
-fn shape_of(body: &str) -> String {
+pub fn shape_of(body: &str) -> String {
     if body.is_empty() {
         return "(empty body)".to_string();
     }

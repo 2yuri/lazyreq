@@ -74,6 +74,7 @@ Judgment calls:
 
 ## Hard rules
 
+- Never run bare `lazyreq` (or `lazyreq --path …`) — that opens an interactive terminal UI for humans and will hang a non-interactive shell. Always pass a `.lreq` file.
 - Never read or write files under `~/.lazyreq/` directly — they are encrypted (gzip + XChaCha20-Poly1305; key in `~/.lazyreq/key`, overridable via `LAZYREQ_KEY`). The only interface is the CLI.
 - Never re-run mutating requests to recover information that `--history` already has.
 - `--curl` still resolves hooks, so it can hit the auth endpoint; it does not run the request itself and records no history for it.

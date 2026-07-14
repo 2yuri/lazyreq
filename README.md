@@ -73,9 +73,61 @@ Status: 200 OK
 
 Prefer clicking? There's a [VS Code / Cursor extension](https://github.com/2yuri/lazyreq-vscode) with syntax highlighting and ▶ Run / Copy-as-curl buttons.
 
+## Interactive UI
+
+Run `lazyreq` with no arguments to open a lazygit-style terminal UI. It scans the current directory for `.lreq` files (`--path <dir>` scans anywhere, e.g. `lazyreq --path ~/projects`):
+
+```
+┌[1] files ────────────┐┌[2] requests — api.lreq ─────────────────────────┐
+│ api.lreq             ││┌login───────────────┐┌me──────────────────┐     │
+│ ~/projects/lazyreq   │││POST $baseURL/login ││GET $baseURL/users/me│    │
+│                      │││200 · 3ms · 21:04   ││not run yet         │     │
+│ shop.lreq            ││└────────────────────┘└────────────────────┘     │
+│ ~/projects/shop      │└─────────────────────────────────────────────────┘
+│┌shortcuts───────────┐│┌[3] history — login ─────────────────────────────┐
+││ 1/2/3  jump panel  │││ ⠼ running…   login                              │
+││ ⏎  open/run/view   │││ 0853d0e6 07-14 21:04 login POST 200 3ms {token:.│
+││ r  retry run       │││ 4645a373 07-14 21:02 login POST 401 2ms {error:.│
+│└────────────────────┘│└─────────────────────────────────────────────────┘
+└──────────────────────┘ ⏎ run · j/k move · tab panel · ? keys · q quit
+```
+
+- **[1] files** — every `.lreq` found (with its directory); parse errors are marked and shown.
+- **[2] requests** — cards with method, URL and the last run's status/latency from history.
+- **[3] history** — recorded runs (all files while browsing; the selected request's runs once one is focused). Runs appear here live with a spinner while executing. `⏎` opens the full detail (request/response), `r` retries a run — exact recorded body, fresh auth.
+- Navigation is lazygit-flavored: `1/2/3` jump between panels, `tab` cycles, `hjkl`/arrows move, `?` shows all keybindings. View/run only for now — editing comes later.
+
+### Themes
+
+The UI ships five built-in themes — `default` (the lazyreq logo palette), `dracula`, `solarized-dark`, `solarized-light` and `atom` — with background and foreground forced, so it looks the same on any terminal scheme. Press `t` to cycle themes; the choice persists.
+
+Themes live in `~/.lazyreq/themes.json` (created on first run with every built-in, so the format is discoverable). Edit a theme, add your own, or set `current`:
+
+```json
+{
+  "current": "default",
+  "themes": {
+    "mine": {
+      "background": "#160f09",
+      "base": "#e6d7bf",
+      "primary": "#bb671f",
+      "secondary": "#9a5619",
+      "border": "#613614",
+      "running": "#8b7b2e",
+      "muted": "#8a7963",
+      "selection_text": "#1d140b"
+    }
+  }
+}
+```
+
+Missing fields fall back to the `default` palette; user themes join the `t` cycle.
+
 ## CLI
 
 ```sh
+lazyreq                                   # interactive UI (scans the current directory)
+lazyreq --path <dir>                      # interactive UI over another directory tree
 lazyreq <file.lreq> <request-id>          # run a request
 lazyreq <file.lreq> <request-id> --curl   # print it as a curl command instead
 lazyreq <file.lreq> --list                # list every request in the file
