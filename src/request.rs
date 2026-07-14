@@ -17,6 +17,19 @@ pub struct MultiPart {
     pub content: String,
 }
 
+pub fn parse_method(method: &str) -> Method {
+    match method.to_uppercase().as_str() {
+        "GET" => Method::GET,
+        "POST" => Method::POST,
+        "PUT" => Method::PUT,
+        "DELETE" => Method::DELETE,
+        "PATCH" => Method::PATCH,
+        "HEAD" => Method::HEAD,
+        "OPTIONS" => Method::OPTIONS,
+        _ => Method::GET, // Default to GET if unknown
+    }
+}
+
 impl Request {
     pub fn default() -> Request {
         Request {
@@ -26,19 +39,6 @@ impl Request {
             headers: HashMap::new(),
             body: "".to_string(),
             multipart: Vec::new(),
-        }
-    }
-
-    pub fn format_method(&self) -> Method {
-        match self.method.to_uppercase().as_str() {
-            "GET" => Method::GET,
-            "POST" => Method::POST,
-            "PUT" => Method::PUT,
-            "DELETE" => Method::DELETE,
-            "PATCH" => Method::PATCH,
-            "HEAD" => Method::HEAD,
-            "OPTIONS" => Method::OPTIONS,
-            _ => Method::GET, // Default to GET if unknown
         }
     }
 

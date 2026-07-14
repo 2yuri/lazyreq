@@ -15,12 +15,16 @@ lazyreq <file.lreq> <id>                  # run a request, print response
 lazyreq <file.lreq> <id> --curl           # print as a curl command (does not run)
 lazyreq import '<curl command>'           # convert curl → .lreq block (append with >>)
 
-# history — past runs, compact by default
-lazyreq <file.lreq> --history             # one line per run (status, latency, size)
+# history — past runs, compact by default; first column is the run id
+lazyreq <file.lreq> --history             # one line per run (run id, status, latency, size)
 lazyreq <file.lreq> <id> --history        # runs of one request + response JSON shape
 lazyreq <file.lreq> <id> --history -v     # + resolved URL, request body, full response
+lazyreq <file.lreq> --history --req <run-id> -v  # one specific run, fully detailed
 lazyreq <file.lreq> --history --failed    # filters: --success | --failed | --status 401
 lazyreq <file.lreq> --history --last 3    # limit to the N most recent
+
+# retry — replay a recorded run by its run id
+lazyreq <file.lreq> --retry <run-id>      # exact recorded URL+body, fresh headers/auth
 ```
 
 ## Workflow
@@ -28,7 +32,8 @@ lazyreq <file.lreq> --history --last 3    # limit to the N most recent
 1. **Orient**: `--list` shows what exists; read the `.lreq` file for details.
 2. **Check history first**: `lazyreq api.lreq me --history --last 3` tells you whether a request recently succeeded and what shape its response has — often that answers the question with ~30 tokens, without re-running anything. Never re-run a POST/PUT/DELETE just to recall its response.
 3. **Run** what you need. Every run (including hook-triggered logins) is recorded automatically.
-4. **Debug failures** with `--history --failed -v`: you get the resolved URL and body that were actually sent. Add `--show-headers` only when debugging headers specifically — it prints live auth tokens into your context.
+4. **Debug failures** with `--history --failed -v`: you get the resolved URL and body that were actually sent, plus each run's id. Add `--show-headers` only when debugging headers specifically — it prints live auth tokens into your context.
+5. **Reproduce exactly** with `--retry <run-id>`: replays the recorded body byte-for-byte (generated `$uuid()`/`$fuzz_*()` values included — a normal re-run would regenerate them) while re-resolving headers so auth is fresh and `$hmac($body, ...)` is recomputed. Never hand-rebuild a curl command from `-v` output to reproduce a request. Retrying re-executes the request — for POST/PUT/DELETE that mutates state, so retry deliberately, not to recall information.
 
 ## Authoring .lreq files
 

@@ -79,7 +79,8 @@ Each occurrence evaluates independently (two `$uuid()` = two UUIDs). Arguments m
 
 ## History & storage
 
-- Every executed request — including hook-triggered ones — appends an encrypted record (timestamp, id, method, resolved URL, request headers/body, status, latency, response body) under `~/.lazyreq/history/`, keyed by the file's absolute path. Transport failures are recorded too (status `ERR` + the error message).
+- Every executed request — including hook-triggered ones — appends an encrypted record (run id, timestamp, request id, method, resolved URL, request headers/body, status, latency, response body) under `~/.lazyreq/history/`, keyed by the file's absolute path. Transport failures are recorded too (status `ERR` + the error message).
+- Each run has a unique 8-hex-char **run id** (first column of `--history` output), distinct from the request's `ID:` name. `--history --req <run-id>` addresses one run; `--retry <run-id>` replays one: recorded URL + body verbatim, headers re-resolved from the current definition (fresh auth, recomputed `$hmac($body, ...)`). Retries are recorded as new runs. Multipart requests cannot be retried (file contents aren't stored).
 - The newest 20 runs per request id are kept.
 - `--curl` and `--list` execute nothing and record nothing.
 - Everything under `~/.lazyreq/` (cache + history) is gzipped then encrypted with XChaCha20-Poly1305. The key is auto-generated at `~/.lazyreq/key` (0600); setting `LAZYREQ_KEY` overrides it. Files written under one key are unreadable (treated as empty) under another.

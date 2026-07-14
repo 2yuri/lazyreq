@@ -52,6 +52,7 @@ async fn run(args: &[String]) -> Result<(), String> {
         Mode::Import(_) | Mode::Version | Mode::History(_) => unreachable!(),
         Mode::List => lazyreq.list(),
         Mode::ExportCurl => lazyreq.export_curl(config.target).await?,
+        Mode::Retry(run_id) => lazyreq.retry(run_id).await?,
         Mode::Run => lazyreq.do_request(config.target).await?,
     }
 

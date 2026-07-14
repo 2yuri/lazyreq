@@ -81,6 +81,7 @@ lazyreq <file.lreq> <request-id> --curl   # print it as a curl command instead
 lazyreq <file.lreq> --list                # list every request in the file
 lazyreq <file.lreq> --history             # past runs of every request in the file
 lazyreq <file.lreq> <request-id> --history  # past runs of one request
+lazyreq <file.lreq> --retry <run-id>      # replay a recorded run (exact body, fresh auth)
 lazyreq import '<curl command>'           # convert a curl command to a request block
 lazyreq --version                         # print the CLI version
 ```
@@ -112,13 +113,15 @@ Every executed request — including hook-triggered logins — is recorded into 
 
 ```sh
 $ lazyreq api.lreq --history
-2026-07-13 21:04:12  login  POST    200     3ms  body:76b  headers:1
-2026-07-13 21:04:12  me     GET     200     1ms  body:83b  headers:1
+0853d0e6  2026-07-13 21:04:12  login  POST    200     3ms  body:76b  headers:1
+4645a373  2026-07-13 21:04:12  me     GET     200     1ms  body:83b  headers:1
 
 $ lazyreq api.lreq login --history --last 1
-2026-07-13 21:04:12  login  POST    200     3ms  body:76b  headers:1
+0853d0e6  2026-07-13 21:04:12  login  POST    200     3ms  body:76b  headers:1
     {token: str(212), user: {email: str(14), id: int}}
 ```
+
+The first column is the **run id** — a unique id per execution, distinct from the request's `ID:` name.
 
 The single-request view summarizes each response as a **JSON shape** — keys and types instead of values — so you (or an AI agent) can see what an endpoint returns without dumping payloads. Escalate detail only when needed:
 
@@ -128,7 +131,16 @@ lazyreq api.lreq login --history -v --show-headers  # + the actual request heade
 lazyreq api.lreq --history --failed               # only non-2xx and transport errors
 lazyreq api.lreq --history --status 401           # only a specific status
 lazyreq api.lreq --history --success --last 5     # 2xx only, most recent 5
+lazyreq api.lreq --history --req 0853d0e6 -v      # one specific run, by run id
 ```
+
+### Retrying a run
+
+```sh
+lazyreq api.lreq --retry 0853d0e6
+```
+
+`--retry` replays a recorded run: the **recorded URL and body are sent verbatim** — including generated `$uuid()` / `$fuzz_*()` values, which a normal re-run would regenerate — while **headers are re-resolved** from the current request definition, so auth hooks produce fresh tokens and `$hmac($body, ...)` signatures are recomputed over the replayed body. That makes it ideal for reproducing a failing request exactly. The retry is recorded as a new run with its own run id.
 
 Failed sends (DNS, refused connections, timeouts) are recorded too, with the error message in place of a body. The newest 20 runs per request id are kept; `--curl` and `--list` execute nothing and record nothing.
 

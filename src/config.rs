@@ -3,6 +3,7 @@ pub enum Mode {
     ExportCurl,
     List,
     History(HistoryOpts),
+    Retry(String),
     Import(String),
     Version,
 }
@@ -20,6 +21,8 @@ pub struct HistoryOpts {
     pub verbose: bool,
     pub show_headers: bool,
     pub filter: HistoryFilter,
+    /// Address a single run by its run id.
+    pub req: Option<String>,
 }
 
 pub struct Config {
@@ -30,7 +33,8 @@ pub struct Config {
 
 const USAGE: &str = "usage: lazyreq <file.lreq> <request-id> [--curl]
        lazyreq <file.lreq> --list
-       lazyreq <file.lreq> [request-id] --history [--last N] [-v] [--show-headers] [--success|--failed|--status CODE]
+       lazyreq <file.lreq> [request-id] --history [--last N] [-v] [--show-headers] [--req RUN-ID] [--success|--failed|--status CODE]
+       lazyreq <file.lreq> --retry <run-id>
        lazyreq import '<curl command>'";
 
 impl Config {
@@ -63,11 +67,13 @@ impl Config {
         let mut target = String::new();
 
         let mut history = false;
+        let mut retry: Option<String> = None;
         let mut opts = HistoryOpts {
             last: None,
             verbose: false,
             show_headers: false,
             filter: HistoryFilter::All,
+            req: None,
         };
 
         let mut iter = args.iter().skip(1);
@@ -94,6 +100,10 @@ impl Config {
                 mode = Mode::List;
             } else if arg == "--history" {
                 history = true;
+            } else if arg == "--retry" {
+                retry = Some(value_of("--retry")?);
+            } else if arg == "--req" {
+                opts.req = Some(value_of("--req")?);
             } else if arg == "--last" {
                 let raw = value_of("--last")?;
                 opts.last = Some(raw.parse().map_err(|_| {
@@ -127,9 +137,9 @@ impl Config {
         }
 
         if history {
-            if !matches!(mode, Mode::Run) {
+            if !matches!(mode, Mode::Run) || retry.is_some() {
                 return Err(format!(
-                    "--history cannot be combined with --curl or --list\n{}",
+                    "--history cannot be combined with --curl, --list or --retry\n{}",
                     USAGE
                 ));
             }
@@ -137,12 +147,27 @@ impl Config {
         } else if opts.last.is_some()
             || opts.verbose
             || opts.show_headers
+            || opts.req.is_some()
             || opts.filter != HistoryFilter::All
         {
             return Err(format!(
-                "--last, --status, --success, --failed, -v and --show-headers only work with --history\n{}",
+                "--last, --status, --success, --failed, --req, -v and --show-headers only work with --history\n{}",
                 USAGE
             ));
+        } else if let Some(run_id) = retry {
+            if !matches!(mode, Mode::Run) {
+                return Err(format!(
+                    "--retry cannot be combined with --curl or --list\n{}",
+                    USAGE
+                ));
+            }
+            if !target.is_empty() {
+                return Err(format!(
+                    "--retry replays a run id, not a request id — drop `{}`\n{}",
+                    target, USAGE
+                ));
+            }
+            mode = Mode::Retry(run_id);
         }
 
         if filename.is_empty() {
@@ -153,7 +178,7 @@ impl Config {
             return Err(format!("`{}` is not a .lreq file\n{}", filename, USAGE));
         }
 
-        if target.is_empty() && !matches!(mode, Mode::List | Mode::History(_)) {
+        if target.is_empty() && !matches!(mode, Mode::List | Mode::History(_) | Mode::Retry(_)) {
             return Err(format!("missing request id\n{}", USAGE));
         }
 
@@ -246,6 +271,27 @@ mod tests {
         assert!(parse(&["api.lreq", "--history", "--curl"]).is_err());
         assert!(parse(&["api.lreq", "--history", "--list"]).is_err());
         assert!(parse(&["api.lreq", "login", "--nope"]).is_err());
+    }
+
+    #[test]
+    fn req_addresses_a_run_within_history() {
+        let config = parse(&["api.lreq", "--history", "--req", "a3f2c1d0"]).unwrap();
+        match config.mode {
+            Mode::History(opts) => assert_eq!(opts.req.as_deref(), Some("a3f2c1d0")),
+            _ => panic!("expected history mode"),
+        }
+        assert!(parse(&["api.lreq", "login", "--req", "a3f2c1d0"]).is_err()); // needs --history
+    }
+
+    #[test]
+    fn retry_takes_a_run_id_and_nothing_else() {
+        let config = parse(&["api.lreq", "--retry", "a3f2c1d0"]).unwrap();
+        assert!(matches!(config.mode, Mode::Retry(id) if id == "a3f2c1d0"));
+
+        assert!(parse(&["api.lreq", "--retry"]).is_err()); // missing value
+        assert!(parse(&["api.lreq", "login", "--retry", "a3f2c1d0"]).is_err()); // no request id
+        assert!(parse(&["api.lreq", "--retry", "a3f2c1d0", "--history"]).is_err());
+        assert!(parse(&["api.lreq", "--retry", "a3f2c1d0", "--curl"]).is_err());
     }
 
     #[test]

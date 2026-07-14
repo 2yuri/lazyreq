@@ -85,28 +85,53 @@ impl LazyReq {
             .await
             .map_err(|e| format!("request `{}` failed:\n  {}", id, e))?;
 
-        let status_colored = match status.chars().next() {
-            Some('2') => status.bold().green(),
-            Some('3') => status.bold().yellow(),
-            _ => status.bold().red(),
+        print_response(&req.method, &url, &status, &result);
+        Ok(())
+    }
+
+    /// Replays a recorded run: the recorded URL and body verbatim (fuzzed
+    /// values and all), with headers re-resolved from the current request
+    /// definition so auth hooks produce fresh tokens.
+    pub async fn retry(&self, run_id: String) -> Result<(), String> {
+        let rec = history::find(&self.filename, &run_id)?.ok_or(format!(
+            "no run `{}` in the history of {} (use --history to see run ids)",
+            run_id, self.filename
+        ))?;
+
+        let headers = match self.requests.get(&rec.id) {
+            Some(def) if !def.multipart.is_empty() => {
+                return Err(format!(
+                    "request `{}` uploads multipart data, which history does not store — run `lazyreq {} {}` instead",
+                    rec.id, self.filename, rec.id
+                ));
+            }
+            Some(def) => {
+                let mut resolved = HashMap::new();
+                for (key, value) in &def.headers {
+                    let value = self
+                        .interpolate(value, true, Some(&rec.req_body), 0)
+                        .await?;
+                    resolved.insert(key.clone(), value);
+                }
+                resolved
+            }
+            None => {
+                eprintln!(
+                    "{} request `{}` is no longer in {}; replaying its recorded headers (auth may be stale)",
+                    "note:".yellow().bold(),
+                    rec.id,
+                    self.filename
+                );
+                rec.req_headers.clone()
+            }
         };
 
-        println!(
-            "{}{}{} {}",
-            "[".bold().green(),
-            req.method.bold().green(),
-            "]".bold().green(),
-            url.bold().green()
-        );
-        println!("{} {}", "Status:".bold().green(), status_colored);
+        let (status, url, result) = self
+            .send_recorded(&rec.id, &rec.method, &rec.url, &headers, &rec.req_body, None)
+            .await
+            .map_err(|e| format!("retry of run `{}` (request `{}`) failed:\n  {}", run_id, rec.id, e))?;
 
-        let pretty_json: Value = serde_json::from_str(result.as_str()).unwrap_or(Value::Null);
-        if !pretty_json.is_null() {
-            println!("{}", to_string_pretty(&pretty_json).unwrap());
-        } else {
-            println!("{}", result);
-        }
-
+        print_response(&rec.method, &url, &status, &result);
         Ok(())
     }
 
@@ -416,15 +441,6 @@ impl LazyReq {
     ) -> Result<(String, String, String), String> {
         let prepared = self.prepare(req, depth).await?;
 
-        let mut http_headers = HeaderMap::new();
-        for (key, value) in &prepared.headers {
-            let header_name = HeaderName::from_bytes(key.as_bytes())
-                .map_err(|_| format!("invalid header name `{}`", key))?;
-            let header_value = HeaderValue::from_str(value)
-                .map_err(|_| format!("invalid value for header `{}`: `{}`", key, value))?;
-            http_headers.insert(header_name, header_value);
-        }
-
         let mut form: Option<multipart::Form> = None;
         if !prepared.multipart.is_empty() {
             let mut m = multipart::Form::new();
@@ -474,18 +490,50 @@ impl LazyReq {
             }
 
             form = Some(m);
+        }
+
+        self.send_recorded(
+            id,
+            &req.method,
+            &prepared.url,
+            &prepared.headers,
+            &prepared.body,
+            form,
+        )
+        .await
+    }
+
+    /// Sends a fully-resolved request and records the run in history.
+    async fn send_recorded(
+        &self,
+        id: &str,
+        method: &str,
+        url: &str,
+        headers: &HashMap<String, String>,
+        body: &str,
+        form: Option<multipart::Form>,
+    ) -> Result<(String, String, String), String> {
+        let mut http_headers = HeaderMap::new();
+        for (key, value) in headers {
+            let header_name = HeaderName::from_bytes(key.as_bytes())
+                .map_err(|_| format!("invalid header name `{}`", key))?;
+            let header_value = HeaderValue::from_str(value)
+                .map_err(|_| format!("invalid value for header `{}`: `{}`", key, value))?;
+            http_headers.insert(header_name, header_value);
+        }
+        if form.is_some() {
             // reqwest sets the multipart boundary itself
             http_headers.remove("Content-Type");
         }
 
         let client = Client::new();
         let request = client
-            .request(req.format_method(), &prepared.url)
+            .request(crate::request::parse_method(method), url)
             .headers(http_headers);
 
         let request = match form {
             Some(f) => request.multipart(f),
-            None => request.body(prepared.body.clone()),
+            None => request.body(body.to_string()),
         };
 
         let record = |status: u16, ms: u64, resp_body: &str, error: Option<String>| {
@@ -493,14 +541,15 @@ impl LazyReq {
                 &self.filename,
                 history::Record {
                     v: 1,
+                    req: history::new_run_id(),
                     ts: get_timestamp(),
                     id: id.to_string(),
-                    method: req.method.to_uppercase(),
-                    url: prepared.url.clone(),
+                    method: method.to_uppercase(),
+                    url: url.to_string(),
                     status,
                     ms,
-                    req_headers: prepared.headers.clone(),
-                    req_body: prepared.body.clone(),
+                    req_headers: headers.clone(),
+                    req_body: body.to_string(),
                     resp_body: resp_body.to_string(),
                     error,
                 },
@@ -531,7 +580,7 @@ impl LazyReq {
         };
 
         record(status.as_u16(), ms, &body, None);
-        Ok((status.to_string(), prepared.url, body))
+        Ok((status.to_string(), url.to_string(), body))
     }
 
     pub fn from_file(&mut self, filename: String) -> Result<(), String> {
@@ -671,6 +720,30 @@ impl LazyReq {
             "hint:".bold(),
             hint
         )
+    }
+}
+
+fn print_response(method: &str, url: &str, status: &str, result: &str) {
+    let status_colored = match status.chars().next() {
+        Some('2') => status.bold().green(),
+        Some('3') => status.bold().yellow(),
+        _ => status.bold().red(),
+    };
+
+    println!(
+        "{}{}{} {}",
+        "[".bold().green(),
+        method.bold().green(),
+        "]".bold().green(),
+        url.bold().green()
+    );
+    println!("{} {}", "Status:".bold().green(), status_colored);
+
+    let pretty_json: Value = serde_json::from_str(result).unwrap_or(Value::Null);
+    if !pretty_json.is_null() {
+        println!("{}", to_string_pretty(&pretty_json).unwrap());
+    } else {
+        println!("{}", result);
     }
 }
 

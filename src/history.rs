@@ -19,6 +19,11 @@ const KEEP_PER_ID: usize = 20;
 #[derive(Serialize, Deserialize)]
 pub struct Record {
     pub v: u8,
+    /// Unique id of this run (8 hex chars), addressable via --req / --retry.
+    /// Distinct from `id`, the request's name in the .lreq file. Empty on
+    /// records written before this field existed.
+    #[serde(default)]
+    pub req: String,
     pub ts: u64,
     pub id: String,
     pub method: String,
@@ -32,6 +37,16 @@ pub struct Record {
     pub resp_body: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+pub fn new_run_id() -> String {
+    format!("{:08x}", rand::random::<u32>())
+}
+
+/// Looks a single run up by its run id.
+pub fn find(filename: &str, req: &str) -> Result<Option<Record>, String> {
+    let path = history_path(filename)?;
+    Ok(load(&path).into_iter().find(|r| r.req == req))
 }
 
 fn history_path(filename: &str) -> Result<PathBuf, String> {
@@ -97,13 +112,14 @@ fn prune(records: Vec<Record>) -> Vec<Record> {
     kept
 }
 
-fn matches(r: &Record, id: Option<&str>, filter: &HistoryFilter) -> bool {
+fn matches(r: &Record, id: Option<&str>, opts: &HistoryOpts) -> bool {
     id.map_or(true, |id| r.id == id)
-        && match filter {
+        && opts.req.as_deref().map_or(true, |req| r.req == req)
+        && match opts.filter {
             HistoryFilter::All => true,
             HistoryFilter::Success => (200..300).contains(&r.status),
             HistoryFilter::Failed => !(200..300).contains(&r.status),
-            HistoryFilter::Status(code) => r.status == *code,
+            HistoryFilter::Status(code) => r.status == code,
         }
 }
 
@@ -112,7 +128,7 @@ pub fn show(filename: &str, id: Option<&str>, opts: &HistoryOpts) -> Result<(), 
 
     let matches: Vec<&Record> = records
         .iter()
-        .filter(|r| matches(r, id, &opts.filter))
+        .filter(|r| matches(r, id, opts))
         .collect();
 
     if matches.is_empty() {
@@ -158,8 +174,10 @@ fn print_line(r: &Record, id_width: usize) {
         .normal(),
     };
 
+    let req = if r.req.is_empty() { "--------" } else { &r.req };
     println!(
-        "{}  {:id_width$}  {:7} {}  {:>4}ms  {}",
+        "{}  {}  {:id_width$}  {:7} {}  {:>4}ms  {}",
+        req.cyan(),
         format_timestamp(r.ts).dimmed(),
         r.id.bold().green(),
         r.method,
@@ -255,9 +273,20 @@ fn human_size(bytes: usize) -> String {
 mod tests {
     use super::*;
 
+    fn opts(filter: HistoryFilter, req: Option<&str>) -> HistoryOpts {
+        HistoryOpts {
+            last: None,
+            verbose: false,
+            show_headers: false,
+            filter,
+            req: req.map(|s| s.to_string()),
+        }
+    }
+
     fn record(id: &str, ts: u64, status: u16) -> Record {
         Record {
             v: 1,
+            req: new_run_id(),
             ts,
             id: id.to_string(),
             method: "GET".to_string(),
@@ -301,24 +330,52 @@ mod tests {
         let broken = record("login", 3, 500);
         let dead = record("login", 4, 0); // transport error
 
-        assert!(matches(&ok, None, &HistoryFilter::Success));
-        assert!(!matches(&redirect, None, &HistoryFilter::Success));
-        assert!(matches(&broken, None, &HistoryFilter::Failed));
-        assert!(matches(&dead, None, &HistoryFilter::Failed));
-        assert!(matches(&broken, None, &HistoryFilter::Status(500)));
-        assert!(!matches(&broken, None, &HistoryFilter::Status(501)));
-        assert!(matches(&ok, Some("login"), &HistoryFilter::All));
-        assert!(!matches(&ok, Some("me"), &HistoryFilter::All));
+        assert!(matches(&ok, None, &opts(HistoryFilter::Success, None)));
+        assert!(!matches(&redirect, None, &opts(HistoryFilter::Success, None)));
+        assert!(matches(&broken, None, &opts(HistoryFilter::Failed, None)));
+        assert!(matches(&dead, None, &opts(HistoryFilter::Failed, None)));
+        assert!(matches(&broken, None, &opts(HistoryFilter::Status(500), None)));
+        assert!(!matches(&broken, None, &opts(HistoryFilter::Status(501), None)));
+        assert!(matches(&ok, Some("login"), &opts(HistoryFilter::All, None)));
+        assert!(!matches(&ok, Some("me"), &opts(HistoryFilter::All, None)));
+    }
+
+    #[test]
+    fn req_filter_addresses_a_single_run() {
+        let run = record("login", 1, 200);
+        let other = record("login", 2, 200);
+
+        assert!(matches(&run, None, &opts(HistoryFilter::All, Some(&run.req.clone()))));
+        assert!(!matches(&other, None, &opts(HistoryFilter::All, Some(&run.req.clone()))));
+    }
+
+    #[test]
+    fn run_ids_are_unique_and_short() {
+        let a = new_run_id();
+        let b = new_run_id();
+        assert_eq!(a.len(), 8);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(a, b);
     }
 
     #[test]
     fn records_survive_a_jsonl_roundtrip() {
-        let line = serde_json::to_string(&record("login", 42, 200)).unwrap();
+        let rec = record("login", 42, 200);
+        let run_id = rec.req.clone();
+        let line = serde_json::to_string(&rec).unwrap();
         let back: Record = serde_json::from_str(&line).unwrap();
         assert_eq!(back.id, "login");
+        assert_eq!(back.req, run_id);
         assert_eq!(back.ts, 42);
         assert!(back.error.is_none());
         assert!(!line.contains("error")); // None is omitted, not serialized
+    }
+
+    #[test]
+    fn records_from_before_run_ids_still_load() {
+        let legacy = r#"{"v":1,"ts":9,"id":"login","method":"GET","url":"http://x","status":200,"ms":1,"req_headers":{},"req_body":"","resp_body":""}"#;
+        let back: Record = serde_json::from_str(legacy).unwrap();
+        assert_eq!(back.req, "");
     }
 
     #[test]
