@@ -74,18 +74,32 @@ impl LazyReq {
         }
     }
 
-    pub async fn do_request(&self, id: String) -> Result<(), String> {
-        let req = self.requests.get(&id).ok_or(format!(
+    /// Request ids in file order.
+    pub fn request_ids(&self) -> &[String] {
+        &self.order
+    }
+
+    pub fn request(&self, id: &str) -> Option<&Request> {
+        self.requests.get(id)
+    }
+
+    /// Runs a request and returns (status line, resolved url, body) without
+    /// printing — the programmatic twin of `do_request`.
+    pub async fn run_request(&self, id: &str) -> Result<(String, String, String), String> {
+        let req = self.requests.get(id).ok_or(format!(
             "request `{}` not found in {} (use --list to see available requests)",
             id, self.filename
         ))?;
 
-        let (status, url, result) = self
-            .execute(&id, req, 0)
+        self.execute(id, req, 0)
             .await
-            .map_err(|e| format!("request `{}` failed:\n  {}", id, e))?;
+            .map_err(|e| format!("request `{}` failed:\n  {}", id, e))
+    }
 
-        print_response(&req.method, &url, &status, &result);
+    pub async fn do_request(&self, id: String) -> Result<(), String> {
+        let (status, url, result) = self.run_request(&id).await?;
+        let method = &self.requests[&id].method;
+        print_response(method, &url, &status, &result);
         Ok(())
     }
 
@@ -93,7 +107,14 @@ impl LazyReq {
     /// values and all), with headers re-resolved from the current request
     /// definition so auth hooks produce fresh tokens.
     pub async fn retry(&self, run_id: String) -> Result<(), String> {
-        let rec = history::find(&self.filename, &run_id)?.ok_or(format!(
+        let (method, status, url, result) = self.retry_run(&run_id).await?;
+        print_response(&method, &url, &status, &result);
+        Ok(())
+    }
+
+    /// Non-printing twin of `retry`: returns (method, status line, url, body).
+    pub async fn retry_run(&self, run_id: &str) -> Result<(String, String, String, String), String> {
+        let rec = history::find(&self.filename, run_id)?.ok_or(format!(
             "no run `{}` in the history of {} (use --history to see run ids)",
             run_id, self.filename
         ))?;
@@ -131,8 +152,7 @@ impl LazyReq {
             .await
             .map_err(|e| format!("retry of run `{}` (request `{}`) failed:\n  {}", run_id, rec.id, e))?;
 
-        print_response(&rec.method, &url, &status, &result);
-        Ok(())
+        Ok((rec.method, status, url, result))
     }
 
     pub async fn export_curl(&self, id: String) -> Result<(), String> {
