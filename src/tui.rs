@@ -433,7 +433,14 @@ const RUST: Color = Color::Rgb(0x9a, 0x56, 0x19);
 const BARK: Color = Color::Rgb(0x61, 0x36, 0x14);
 const OLIVE: Color = Color::Rgb(0x8b, 0x7b, 0x2e);
 const INK: Color = Color::Rgb(0x1d, 0x14, 0x0b);
-const DIM: Color = Color::DarkGray;
+/// Forced background + foreground so the UI looks the same on any terminal.
+const BG: Color = Color::Rgb(0x16, 0x0f, 0x09);
+const FG: Color = Color::Rgb(0xe6, 0xd7, 0xbf);
+const DIM: Color = Color::Rgb(0x8a, 0x79, 0x63);
+
+fn base() -> Style {
+    Style::new().bg(BG).fg(FG)
+}
 
 fn accent() -> Style {
     Style::new().fg(COPPER)
@@ -474,6 +481,10 @@ fn panel_block(title: String, active: bool) -> Block<'static> {
 }
 
 fn draw(frame: &mut Frame, app: &mut App) {
+    // Paint the whole screen with the theme's own bg/fg first; widgets that
+    // don't set a bg inherit it, keeping the look terminal-independent.
+    frame.render_widget(Block::default().style(base()), frame.area());
+
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(0), Constraint::Length(1)])
@@ -836,6 +847,7 @@ fn draw_detail(frame: &mut Frame, app: &App, file: usize, record: &Record, scrol
     let widget = Paragraph::new(Text::from(lines))
         .block(
             Block::default()
+                .style(base())
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(accent())
@@ -873,6 +885,7 @@ fn draw_keys(frame: &mut Frame) {
 
     let widget = Paragraph::new(lines).block(
         Block::default()
+            .style(base())
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(accent())
