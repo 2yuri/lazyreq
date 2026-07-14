@@ -420,14 +420,35 @@ fn self_len(app: &App) -> usize {
 
 // ---------------------------------------------------------------- rendering
 //
-// One accent color, everything else default or dim — the terminal's own
-// theme does the rest. Rounded borders throughout, matching the sketch.
+// Fixed default theme drawn from the lazyreq logo — independent of the
+// terminal's color scheme (a user-config theme may come later):
+//   #bb671f copper   → focused borders, headings, selection
+//   #9a5619 rust     → secondary accents (keys, run ids, inactive titles)
+//   #613614 bark     → resting borders
+//   #8b7b2e olive    → in-flight/running accents
+// Rounded borders throughout, matching the sketch.
 
-const ACCENT: Color = Color::Cyan;
+const COPPER: Color = Color::Rgb(0xbb, 0x67, 0x1f);
+const RUST: Color = Color::Rgb(0x9a, 0x56, 0x19);
+const BARK: Color = Color::Rgb(0x61, 0x36, 0x14);
+const OLIVE: Color = Color::Rgb(0x8b, 0x7b, 0x2e);
+const INK: Color = Color::Rgb(0x1d, 0x14, 0x0b);
 const DIM: Color = Color::DarkGray;
 
 fn accent() -> Style {
-    Style::new().fg(ACCENT)
+    Style::new().fg(COPPER)
+}
+
+fn secondary() -> Style {
+    Style::new().fg(RUST)
+}
+
+fn olive() -> Style {
+    Style::new().fg(OLIVE)
+}
+
+fn border_rest() -> Style {
+    Style::new().fg(BARK)
 }
 
 fn dim() -> Style {
@@ -435,14 +456,14 @@ fn dim() -> Style {
 }
 
 fn selected_style() -> Style {
-    Style::new().add_modifier(Modifier::REVERSED)
+    Style::new().fg(INK).bg(COPPER).add_modifier(Modifier::BOLD)
 }
 
 fn panel_block(title: String, active: bool) -> Block<'static> {
     let (border, title_style) = if active {
         (accent(), accent().bold())
     } else {
-        (dim(), dim())
+        (border_rest(), secondary())
     };
     Block::default()
         .borders(Borders::ALL)
@@ -539,7 +560,7 @@ fn draw_shortcuts(frame: &mut Frame, area: Rect) {
         .iter()
         .map(|(k, d)| {
             Line::from(vec![
-                Span::styled(format!("{:9}", k), accent()),
+                Span::styled(format!("{:9}", k), secondary()),
                 Span::styled(d.to_string(), dim()),
             ])
         })
@@ -623,7 +644,7 @@ fn draw_requests(frame: &mut Frame, app: &mut App, area: Rect) {
         let last_line = if running {
             Line::from(Span::styled(
                 format!("{} running…", SPINNER[app.tick % SPINNER.len()]),
-                accent(),
+                olive(),
             ))
         } else {
             match app.last_run(app.file_idx, id) {
@@ -644,7 +665,7 @@ fn draw_requests(frame: &mut Frame, app: &mut App, area: Rect) {
         let (border, title_style) = if selected {
             (accent(), accent().bold())
         } else {
-            (dim(), Style::new().bold())
+            (border_rest(), secondary().bold())
         };
         let card_block = Block::default()
             .borders(Borders::ALL)
@@ -686,7 +707,7 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
         items.push(ListItem::new(Line::from(vec![
             Span::styled(
                 format!("{} {}…  ", SPINNER[app.tick % SPINNER.len()], running.kind),
-                accent(),
+                olive(),
             ),
             Span::styled(running.id.clone(), Style::new().bold()),
             Span::styled(format!("  {}", file_name), dim()),
@@ -701,7 +722,7 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
         };
         let run_id = if rec.req.is_empty() { "········" } else { &rec.req };
         items.push(ListItem::new(Line::from(vec![
-            Span::styled(format!("{} ", run_id), dim()),
+            Span::styled(format!("{} ", run_id), secondary()),
             Span::styled(format!("{} ", &format_timestamp(rec.ts)[5..16]), dim()),
             Span::raw(format!("{:12} ", rec.id)),
             Span::styled(format!("{:5} ", rec.method), dim()),
@@ -844,7 +865,7 @@ fn draw_keys(frame: &mut Frame) {
         .iter()
         .map(|(k, d)| {
             Line::from(vec![
-                Span::styled(format!("{:14}", k), accent()),
+                Span::styled(format!("{:14}", k), secondary()),
                 Span::raw(d.to_string()),
             ])
         })
