@@ -21,6 +21,7 @@ use tokio::sync::mpsc;
 use crate::history::{self, Record};
 use crate::lazyreq::LazyReq;
 use crate::theme::{self, Theme};
+use crate::update;
 use crate::timest::format_timestamp;
 
 const SKIP_DIRS: &[&str] = &[
@@ -72,6 +73,7 @@ struct HistEntry {
 pub struct App {
     root: String,
     themes: theme::Themes,
+    update_available: Option<String>,
     files: Vec<FileEntry>,
     file_idx: usize,
     req_idx: usize,
@@ -165,6 +167,7 @@ impl App {
         let mut app = App {
             root: shorten_home(&root.to_string_lossy()),
             themes: theme::load(),
+            update_available: None,
             files,
             file_idx: 0,
             req_idx: 0,
@@ -251,11 +254,37 @@ pub async fn run(path: Option<String>) -> Result<(), String> {
     let mut app = App::new(&root);
     let (tx, mut rx) = mpsc::unbounded_channel::<RunOutcome>();
 
+    let (update_tx, mut update_rx) = mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        if let Some(version) = update::newer_version().await {
+            let _ = update_tx.send(version);
+        }
+    });
+
+    // Input runs on its own thread: crossterm's poll can report readiness on
+    // partial terminal responses and then block the whole UI inside read().
+    // A dedicated blocking reader + channel keeps the loop always moving.
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Event>();
+    std::thread::spawn(move || loop {
+        match event::read() {
+            Ok(ev) => {
+                if input_tx.send(ev).is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    });
+
     let mut terminal = ratatui::init();
     let result = loop {
         app.tick = app.tick.wrapping_add(1);
         if let Err(e) = terminal.draw(|frame| draw(frame, &mut app)) {
             break Err(format!("draw failed: {}", e));
+        }
+
+        while let Ok(version) = update_rx.try_recv() {
+            app.update_available = Some(version);
         }
 
         // Run completions arrive from spawned tasks; pop exactly one
@@ -274,16 +303,14 @@ pub async fn run(path: Option<String>) -> Result<(), String> {
             app.reload_history();
         }
 
-        match event::poll(Duration::from_millis(80)) {
-            Ok(true) => {
-                if let Ok(Event::Key(key)) = event::read() {
-                    if key.kind == KeyEventKind::Press {
-                        handle_key(&mut app, key.code, key.modifiers, &tx);
-                    }
+        if let Ok(Some(ev)) =
+            tokio::time::timeout(Duration::from_millis(80), input_rx.recv()).await
+        {
+            if let Event::Key(key) = ev {
+                if key.kind == KeyEventKind::Press {
+                    handle_key(&mut app, key.code, key.modifiers, &tx);
                 }
             }
-            Ok(false) => {}
-            Err(e) => break Err(format!("input error: {}", e)),
         }
 
         if app.quit {
@@ -501,9 +528,10 @@ fn draw(frame: &mut Frame, app: &mut App) {
         .constraints([Constraint::Length(30), Constraint::Min(0)])
         .split(outer[0]);
 
+    let shortcuts_height = if app.update_available.is_some() { 10 } else { 9 };
     let left = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(8)])
+        .constraints([Constraint::Min(0), Constraint::Length(shortcuts_height)])
         .split(columns[0]);
 
     let right = Layout::default()
@@ -512,7 +540,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         .split(columns[1]);
 
     draw_files(frame, app, left[0]);
-    draw_shortcuts(frame, th, left[1]);
+    draw_shortcuts(frame, app, left[1]);
     draw_requests(frame, app, right[0]);
     draw_history(frame, app, right[1]);
     draw_status_line(frame, app, outer[1]);
@@ -565,7 +593,8 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-fn draw_shortcuts(frame: &mut Frame, th: Theme, area: Rect) {
+fn draw_shortcuts(frame: &mut Frame, app: &App, area: Rect) {
+    let th = app.th();
     let keys = [
         ("1·2·3", "jump panel"),
         ("⏎", "open · run · view"),
@@ -575,7 +604,7 @@ fn draw_shortcuts(frame: &mut Frame, th: Theme, area: Rect) {
         ("?", "all keybindings"),
         ("q", "quit"),
     ];
-    let lines: Vec<Line> = keys
+    let mut lines: Vec<Line> = keys
         .iter()
         .map(|(k, d)| {
             Line::from(vec![
@@ -584,6 +613,16 @@ fn draw_shortcuts(frame: &mut Frame, th: Theme, area: Rect) {
             ])
         })
         .collect();
+
+    if let Some(version) = &app.update_available {
+        lines.insert(
+            5,
+            Line::from(vec![
+                Span::styled(format!("{:9}", "⬆"), running_style(th)),
+                Span::styled(format!("v{} available", version), running_style(th)),
+            ]),
+        );
+    }
     frame.render_widget(
         Paragraph::new(lines).block(panel_block(th, "shortcuts".to_string(), false)),
         area,

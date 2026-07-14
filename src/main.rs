@@ -15,6 +15,7 @@ mod request;
 mod theme;
 mod timest;
 mod tui;
+mod update;
 mod vault;
 
 #[tokio::main]
@@ -44,6 +45,10 @@ async fn run(args: &[String]) -> Result<(), String> {
         return tui::run(path).await;
     }
 
+    if let Mode::Update = config.mode {
+        return update::self_update().await;
+    }
+
     if let Mode::History(opts) = &config.mode {
         // History only needs the file's identity, not a successful parse —
         // past runs stay readable even while the file is mid-edit.
@@ -55,7 +60,7 @@ async fn run(args: &[String]) -> Result<(), String> {
     lazyreq.from_file(config.filename)?;
 
     match config.mode {
-        Mode::Import(_) | Mode::Version | Mode::History(_) | Mode::Tui(_) => unreachable!(),
+        Mode::Import(_) | Mode::Version | Mode::History(_) | Mode::Tui(_) | Mode::Update => unreachable!(),
         Mode::List => lazyreq.list(),
         Mode::ExportCurl => lazyreq.export_curl(config.target).await?,
         Mode::Retry(run_id) => lazyreq.retry(run_id).await?,

@@ -29,7 +29,13 @@ lazyreq api.lreq login
 
 ## Quick start
 
-**1.** Install — grab a binary for macOS (universal), Linux (x86_64/arm64) or Windows from the [releases page](https://github.com/2yuri/lazyreq/releases) and put it on your `PATH`, or build with cargo:
+**1.** Install:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/2yuri/lazyreq/main/install.sh | bash
+```
+
+Detects your platform, verifies checksums, and installs the latest release to `~/.local/bin` (override with `LAZYREQ_INSTALL_DIR`; pin a version with `VERSION=v0.2.0`). Or grab a binary for macOS (universal), Linux (x86_64/arm64) or Windows from the [releases page](https://github.com/2yuri/lazyreq/releases), or build with cargo:
 
 ```sh
 cargo install --git https://github.com/2yuri/lazyreq
@@ -135,8 +141,11 @@ lazyreq <file.lreq> --history             # past runs of every request in the fi
 lazyreq <file.lreq> <request-id> --history  # past runs of one request
 lazyreq <file.lreq> --retry <run-id>      # replay a recorded run (exact body, fresh auth)
 lazyreq import '<curl command>'           # convert a curl command to a request block
+lazyreq update                            # self-update to the latest release
 lazyreq --version                         # print the CLI version
 ```
+
+`lazyreq update` downloads the right build for your platform from the latest GitHub release, verifies its checksum and replaces the running binary in place. The interactive UI also checks for new versions on start (in the background, at most once every 6 hours, silently skipped when offline) and shows a `⬆ vX.Y.Z available` notice in the shortcuts panel.
 
 ```sh
 $ lazyreq api.lreq --list
