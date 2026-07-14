@@ -37,3 +37,18 @@ ID: new
 GET $baseURL/$path/users/$me.id
 H: Content-Type = application/json
 H: Authorization = Bearer $login.token
+# Built-in functions: $uuid(), $fuzz_str(len), $fuzz_int(min, max)
+# and $hmac(data, key, algo?, encoding?) — algo: sha1|sha256|sha512
+# (default sha256), encoding: hex|base64 (default base64).
+# $body resolves to the final request body, so you can sign it.
+# Use $$ for a literal $.
+ID: create-fuzzed
+POST $baseURL/$path/users
+H: Content-Type = application/json
+H: X-Request-Id = $uuid()
+H: X-Signature = $hmac($body, $env.WEBHOOK_SECRET)
+{
+  "name": "$fuzz_str(12)",
+  "age": $fuzz_int(18, 90),
+  "email": "$fuzz_str(8)@example.com"
+}

@@ -1,6 +1,5 @@
 use async_recursion::async_recursion;
 use colored::*;
-use core::panic;
 use mime_guess::from_path;
 use regex::Regex;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -14,13 +13,28 @@ use std::path::Path;
 use std::{env, fs};
 
 use crate::cache::Cache;
+use crate::functions;
+use crate::history;
 use crate::request::Request;
+use crate::timest::get_timestamp;
+
+const MAX_DEPTH: usize = 16;
+const TOKEN_PATTERN: &str = r"\$\$|\$[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*(?:\([^)]*\))?";
 
 pub struct LazyReq {
     variables: HashMap<String, String>,
     hooks: HashMap<String, String>,
     requests: HashMap<String, Request>,
+    order: Vec<String>,
     filename: String,
+}
+
+/// A resolved request, ready to send: everything interpolated.
+struct Prepared {
+    url: String,
+    headers: HashMap<String, String>,
+    body: String,
+    multipart: Vec<(String, String)>,
 }
 
 impl LazyReq {
@@ -29,392 +43,893 @@ impl LazyReq {
             variables: HashMap::new(),
             hooks: HashMap::new(),
             requests: HashMap::new(),
+            order: Vec::new(),
             filename: "".to_string(),
         }
     }
 
-    pub async fn do_request(&self, id: String) {
-        match self.requests.get(&id) {
-            Some(req) => {
-                print!(
-                    "{}{}{}",
-                    "[".bold().green(),
-                    req.method.clone().bold().green(),
-                    "]".bold().green()
-                );
-                let (status, url, result) = self.execute(req).await.unwrap();
-                print!(" {}\n", url.bold().green());
+    pub fn list(&self) {
+        let width = self
+            .order
+            .iter()
+            .map(|id| id.len())
+            .max()
+            .unwrap_or(0);
 
-                println!("{} {}", "Status:".bold().green(), status.bold().green());
-                let pretty_json: Value =
-                    serde_json::from_str(&result.as_str()).unwrap_or(Value::Null);
-                if !pretty_json.is_null() {
-                    println!("{}", to_string_pretty(&pretty_json).unwrap());
-                } else {
-                    println!("{}", result.bold().green());
+        for id in &self.order {
+            let req = &self.requests[id];
+            let description = if req.description.is_empty() {
+                "".normal()
+            } else {
+                format!("  — {}", req.description).dimmed()
+            };
+            println!(
+                "{:width$}  {:7} {}{}",
+                id.bold().green(),
+                req.method,
+                req.path,
+                description,
+                width = width
+            );
+        }
+    }
+
+    pub async fn do_request(&self, id: String) -> Result<(), String> {
+        let req = self.requests.get(&id).ok_or(format!(
+            "request `{}` not found in {} (use --list to see available requests)",
+            id, self.filename
+        ))?;
+
+        let (status, url, result) = self
+            .execute(&id, req, 0)
+            .await
+            .map_err(|e| format!("request `{}` failed:\n  {}", id, e))?;
+
+        print_response(&req.method, &url, &status, &result);
+        Ok(())
+    }
+
+    /// Replays a recorded run: the recorded URL and body verbatim (fuzzed
+    /// values and all), with headers re-resolved from the current request
+    /// definition so auth hooks produce fresh tokens.
+    pub async fn retry(&self, run_id: String) -> Result<(), String> {
+        let rec = history::find(&self.filename, &run_id)?.ok_or(format!(
+            "no run `{}` in the history of {} (use --history to see run ids)",
+            run_id, self.filename
+        ))?;
+
+        let headers = match self.requests.get(&rec.id) {
+            Some(def) if !def.multipart.is_empty() => {
+                return Err(format!(
+                    "request `{}` uploads multipart data, which history does not store — run `lazyreq {} {}` instead",
+                    rec.id, self.filename, rec.id
+                ));
+            }
+            Some(def) => {
+                let mut resolved = HashMap::new();
+                for (key, value) in &def.headers {
+                    let value = self
+                        .interpolate(value, true, Some(&rec.req_body), 0)
+                        .await?;
+                    resolved.insert(key.clone(), value);
                 }
+                resolved
             }
             None => {
-                println!("Request not found");
+                eprintln!(
+                    "{} request `{}` is no longer in {}; replaying its recorded headers (auth may be stale)",
+                    "note:".yellow().bold(),
+                    rec.id,
+                    self.filename
+                );
+                rec.req_headers.clone()
             }
-        }
+        };
+
+        let (status, url, result) = self
+            .send_recorded(&rec.id, &rec.method, &rec.url, &headers, &rec.req_body, None)
+            .await
+            .map_err(|e| format!("retry of run `{}` (request `{}`) failed:\n  {}", run_id, rec.id, e))?;
+
+        print_response(&rec.method, &url, &status, &result);
+        Ok(())
     }
 
-    pub async fn export_curl(&self, id: String) {
-        match self.requests.get(&id) {
-            Some(req) => {
-                let curl_command = self.generate_curl_command(req).await;
-                println!("{}", curl_command);
-            }
-            None => {
-                println!("Request not found");
-            }
-        }
-    }
+    pub async fn export_curl(&self, id: String) -> Result<(), String> {
+        let req = self.requests.get(&id).ok_or(format!(
+            "request `{}` not found in {} (use --list to see available requests)",
+            id, self.filename
+        ))?;
 
-    async fn generate_curl_command(&self, req: &Request) -> String {
-        let url = self.handle_variables_and_hooks(req.path.clone()).await;
-        
-        let mut headers = req.headers.clone();
-        for (key, value) in &req.headers {
-            let normalized = self.handle_variables_and_hooks(value.clone()).await;
-            headers.insert(key.clone(), normalized.clone());
-        }
+        let prepared = self
+            .prepare(req, 0)
+            .await
+            .map_err(|e| format!("cannot resolve request `{}`:\n  {}", id, e))?;
 
         let mut curl_parts = vec![format!("curl -X {}", req.method.to_uppercase())];
-        
-        // Add headers
-        for (key, value) in &headers {
+
+        for (key, value) in &prepared.headers {
             curl_parts.push(format!("-H \"{}: {}\"", key, value));
         }
 
-        // Handle multipart data
-        if !req.multipart.is_empty() {
-            for part in &req.multipart {
-                if part.content.starts_with("file://") {
-                    let path_str = part.content.clone().replace("file://", "");
-                    curl_parts.push(format!("-F \"{}=@{}\"", part.name, path_str));
-                } else if part.content.starts_with("download://") {
-                    // For download URLs, we can't easily convert to curl without downloading first
-                    // So we'll just include the URL as a form field
-                    curl_parts.push(format!("-F \"{}={}\"", part.name, part.content));
+        if !prepared.multipart.is_empty() {
+            for (name, content) in &prepared.multipart {
+                if let Some(path) = content.strip_prefix("file://") {
+                    curl_parts.push(format!("-F \"{}=@{}\"", name, path));
                 } else {
-                    curl_parts.push(format!("-F \"{}={}\"", part.name, part.content));
+                    curl_parts.push(format!("-F \"{}={}\"", name, content));
                 }
             }
-        } else if !req.body.is_empty() {
-            // Add body data
-            curl_parts.push(format!("-d '{}'", req.body));
+        } else if !prepared.body.is_empty() {
+            curl_parts.push(format!("-d '{}'", prepared.body));
         }
 
-        // Add URL
-        curl_parts.push(format!("\"{}\"", url));
+        curl_parts.push(format!("\"{}\"", prepared.url));
 
-        curl_parts.join(" \\\n  ")
+        println!("{}", curl_parts.join(" \\\n  "));
+        Ok(())
     }
 
+    /// Interpolates `$variables`, `$env.X`, `$hook.field` references, `$body`
+    /// and `$function(...)` calls in `input`.
+    ///
+    /// `strict` mode (URLs, headers, multipart values) errors on unknown
+    /// tokens; lenient mode (request bodies) passes them through untouched so
+    /// natural dollar-words in JSON (`$gte`, `$set`, ...) keep working.
     #[async_recursion]
-    pub async fn handle_macro(&self, macr: String, splits: Vec<&str>) -> (String, String) {
-        if macr.starts_with("$req.") {
-            let macro_parsed = &macr.replace("$req.", "");
-
-            let mut cacher: Option<Cache> = None;
-            if splits.len() > 1 {
-                cacher = Some(Cache::new(&self.filename, macro_parsed));
-                let has = cacher.as_mut().unwrap().get();
-                if has.is_some() {
-                    return (macro_parsed.clone(), has.unwrap());
-                }
-            }
-
-            let req = self.requests.get(macro_parsed).unwrap();
-            let (_, _, result) = self.execute(req).await.unwrap();
-            if splits.len() > 1 && cacher.is_some() {
-                cacher
-                    .as_mut()
-                    .unwrap()
-                    .set(result.clone(), splits[1].parse::<u64>().unwrap());
-            }
-
-            return (macro_parsed.clone(), result);
+    async fn interpolate(
+        &self,
+        input: &str,
+        strict: bool,
+        body: Option<&str>,
+        depth: usize,
+    ) -> Result<String, String> {
+        if depth > MAX_DEPTH {
+            return Err("recursion limit reached (circular hook reference?)".to_string());
         }
 
-        return (String::new(), String::new());
-    }
+        let re = Regex::new(TOKEN_PATTERN).unwrap();
+        let mut output = String::with_capacity(input.len());
+        let mut last_end = 0;
 
-    #[async_recursion]
-    async fn handle_variables_and_hooks(&self, data: String) -> String {
-        let pattern = r"\$[\w.]+";
-        let re = Regex::new(pattern).unwrap();
+        for m in re.find_iter(input) {
+            output.push_str(&input[last_end..m.start()]);
+            last_end = m.end();
 
-        let mut url = data.clone();
-        for i in re.find_iter(&data) {
-            if i.as_str().starts_with("$$") {
+            let token = m.as_str();
+            if token == "$$" {
+                output.push('$');
                 continue;
             }
 
-            let replace_value = i.clone().as_str();
-            let mut item: String = i.as_str().chars().skip(1).collect();
-
-            item = item.split(".").collect::<Vec<&str>>()[0].to_string();
-
-            let is_hook = self.hooks.get(item.as_str().trim());
-            if is_hook.is_some() {
-                let hook = is_hook.unwrap().to_string();
-                let parts: Vec<&str> = hook.split(" ").collect::<Vec<&str>>();
-
-                let (macro_name, macro_result) =
-                    self.handle_macro(parts[0].to_string(), parts).await;
-                let mut parsed: Value = serde_json::from_str(&macro_result.as_str()).unwrap();
-
-                let macro_name_parsed = "$".to_string() + macro_name.as_str() + ".";
-                let replaced = replace_value.replace(macro_name_parsed.as_str(), "");
-                let parts = replaced.split(".").collect::<Vec<&str>>();
-
-                for part in parts.iter() {
-                    if parsed.get(part).is_none() {
-                        panic!("Macro {} not found", replace_value);
-                    }
-
-                    parsed = parsed.get(part).unwrap().clone();
-                }
-
-                url = url.replace(&replace_value, &parsed.as_str().unwrap())
-            }
-
-            let is_variable = self.variables.get(item.as_str());
-            if is_variable.is_some() {
-                url = url.replace(&replace_value, &is_variable.unwrap().to_string());
-            }
-
-            if !is_variable.is_some() && !is_hook.is_some() {
-                panic!(
-                    "Variable or hook not found: {}",
-                    item.to_string().to_string()
-                );
-            }
-
-            // url = url.replace(&item, &self.variables.get(&item).unwrap());
+            let resolved = self.resolve_token(token, strict, body, depth).await?;
+            output.push_str(&resolved);
         }
 
-        return url;
+        output.push_str(&input[last_end..]);
+        Ok(output)
+    }
+
+    async fn resolve_token(
+        &self,
+        token: &str,
+        strict: bool,
+        body: Option<&str>,
+        depth: usize,
+    ) -> Result<String, String> {
+        // Split "$name.path.to.field(args)" into its pieces.
+        let inner = &token[1..];
+        let (name_path, args) = match inner.find('(') {
+            Some(idx) => (
+                &inner[..idx],
+                Some(inner[idx + 1..inner.len() - 1].to_string()),
+            ),
+            None => (inner, None),
+        };
+        let mut segments = name_path.split('.');
+        let name = segments.next().unwrap();
+        let path: Vec<&str> = segments.collect();
+
+        // Function call: $uuid(), $hmac(data, key), ...
+        if let Some(args_str) = args {
+            if path.is_empty() && functions::is_function(name) {
+                let mut resolved_args = Vec::new();
+                if !args_str.trim().is_empty() {
+                    for raw in args_str.split(',') {
+                        let interpolated =
+                            self.interpolate(raw.trim(), true, body, depth + 1).await?;
+                        resolved_args.push(strip_quotes(&interpolated));
+                    }
+                }
+                return functions::call(name, &resolved_args);
+            }
+
+            if strict {
+                return Err(format!(
+                    "unknown function `${}()` (available: $uuid, $fuzz_str, $fuzz_int, $hmac)",
+                    name_path
+                ));
+            }
+            return Ok(token.to_string());
+        }
+
+        // $env.VAR_NAME
+        if name == "env" {
+            let var = path.join(".");
+            if var.is_empty() {
+                return Err("`$env` needs a variable name, e.g. `$env.API_TOKEN`".to_string());
+            }
+            return env::var(&var)
+                .map_err(|_| format!("environment variable `{}` is not set", var));
+        }
+
+        // $body — the interpolated body of the request being sent
+        if name == "body" && path.is_empty() {
+            match body {
+                Some(b) => return Ok(b.to_string()),
+                None => {
+                    if strict {
+                        return Err(
+                            "`$body` is only available in URLs, headers and multipart values"
+                                .to_string(),
+                        );
+                    }
+                    return Ok(token.to_string());
+                }
+            }
+        }
+
+        // Hook: $login.token — executes the hooked request and drills into
+        // its JSON response.
+        if let Some(hook_def) = self.hooks.get(name) {
+            let response = self.resolve_hook(name, hook_def, depth).await?;
+            if path.is_empty() {
+                return Ok(response);
+            }
+
+            let mut parsed: Value = serde_json::from_str(&response).map_err(|_| {
+                format!(
+                    "hook `{}` response is not JSON, cannot resolve `{}`",
+                    name, token
+                )
+            })?;
+
+            for part in &path {
+                parsed = match parsed.get(part) {
+                    Some(v) => v.clone(),
+                    None => {
+                        let available = match &parsed {
+                            Value::Object(map) => format!(
+                                " (available fields: {})",
+                                map.keys().cloned().collect::<Vec<_>>().join(", ")
+                            ),
+                            _ => String::new(),
+                        };
+                        return Err(format!(
+                            "field `{}` not found in response of hook `{}`{}",
+                            part, name, available
+                        ));
+                    }
+                };
+            }
+
+            return Ok(match parsed {
+                Value::String(s) => s,
+                other => other.to_string(),
+            });
+        }
+
+        // Plain variable
+        if let Some(value) = self.variables.get(name) {
+            let mut result = value.clone();
+            if !path.is_empty() {
+                result.push('.');
+                result.push_str(&path.join("."));
+            }
+            return Ok(result);
+        }
+
+        if strict {
+            return Err(format!(
+                "unknown variable or hook `{}` (use `$${}` for a literal `$`)",
+                token,
+                &token[1..]
+            ));
+        }
+        Ok(token.to_string())
+    }
+
+    async fn resolve_hook(
+        &self,
+        name: &str,
+        definition: &str,
+        depth: usize,
+    ) -> Result<String, String> {
+        let parts: Vec<&str> = definition.split_whitespace().collect();
+        let req_id = parts[0].strip_prefix("$req.").ok_or(format!(
+            "invalid hook `{}`: expected `$req.<request-id> [cache-seconds]`, got `{}`",
+            name, definition
+        ))?;
+
+        let ttl: Option<u64> = match parts.get(1) {
+            Some(raw) => Some(raw.parse().map_err(|_| {
+                format!(
+                    "invalid cache duration `{}` on hook `{}` (expected seconds)",
+                    raw, name
+                )
+            })?),
+            None => None,
+        };
+
+        let mut cacher = match ttl {
+            Some(_) => Some(Cache::new(&self.filename, req_id)?),
+            None => None,
+        };
+        if let Some(c) = cacher.as_mut() {
+            if let Some(cached) = c.get() {
+                return Ok(cached);
+            }
+        }
+
+        let req = self.requests.get(req_id).ok_or(format!(
+            "hook `{}` references unknown request `{}`",
+            name, req_id
+        ))?;
+
+        let (status, _, result) = self
+            .execute(req_id, req, depth + 1)
+            .await
+            .map_err(|e| format!("hook `{}` (request `{}`) failed: {}", name, req_id, e))?;
+
+        if !status.starts_with('2') {
+            return Err(format!(
+                "hook `{}` (request `{}`) returned status {}: {}",
+                name, req_id, status, result
+            ));
+        }
+
+        if let (Some(c), Some(seconds)) = (cacher.as_mut(), ttl) {
+            c.set(result.clone(), seconds)?;
+        }
+
+        Ok(result)
+    }
+
+    /// Resolves every dynamic part of a request: body first (lenient), then
+    /// URL, headers and multipart values (strict, with `$body` available).
+    async fn prepare(&self, req: &Request, depth: usize) -> Result<Prepared, String> {
+        if depth > MAX_DEPTH {
+            return Err("recursion limit reached (circular hook reference?)".to_string());
+        }
+
+        let body = if req.body.is_empty() {
+            String::new()
+        } else {
+            self.interpolate(&req.body, false, None, depth).await?
+        };
+
+        let url = self.interpolate(&req.path, true, Some(&body), depth).await?;
+
+        let mut headers = HashMap::new();
+        for (key, value) in &req.headers {
+            let resolved = self.interpolate(value, true, Some(&body), depth).await?;
+            headers.insert(key.clone(), resolved);
+        }
+
+        let mut parts = Vec::new();
+        for part in &req.multipart {
+            let resolved = self
+                .interpolate(&part.content, true, Some(&body), depth)
+                .await?;
+            parts.push((part.name.clone(), resolved));
+        }
+
+        Ok(Prepared {
+            url,
+            headers,
+            body,
+            multipart: parts,
+        })
     }
 
     #[async_recursion]
-    async fn execute(&self, req: &Request) -> Result<(String, String, String), Box<dyn Error>> {
-        let url = self.handle_variables_and_hooks(req.path.clone()).await;
+    async fn execute(
+        &self,
+        id: &str,
+        req: &Request,
+        depth: usize,
+    ) -> Result<(String, String, String), String> {
+        let prepared = self.prepare(req, depth).await?;
 
-        let mut headers = req.headers.clone();
-        for (key, value) in &req.headers {
-            let normalized = self.handle_variables_and_hooks(value.clone()).await;
-            headers.insert(key.clone(), normalized.clone());
-        }
-
-        let mut new = Request::new(
-            req.method.clone(),
-            url.clone(),
-            req.body.clone(),
-            req.multipart.clone(),
-        );
-
-        if !headers.is_empty() {
-            new.set_headers(headers);
-        }
-
-        let http_method = new.format_method();
-        let mut http_headers = HeaderMap::new();
-        for (key, value) in new.headers.clone() {
-            http_headers.insert(
-                HeaderName::from_bytes(key.as_bytes()).unwrap(),
-                HeaderValue::from_str(value.as_str()).unwrap(),
-            );
-        }
-
-        let mut multipart: Option<multipart::Form> = None;
-
-        let new_multipart = new.multipart.clone();
-        if new_multipart.len() > 0 {
+        let mut form: Option<multipart::Form> = None;
+        if !prepared.multipart.is_empty() {
             let mut m = multipart::Form::new();
 
-            for part in new_multipart.iter() {
-                if part.content.starts_with("download://") {
-                    let path_str = part.content.clone().replace("download://", "");
-                    let bytes = reqwest::get(path_str.clone()).await?.bytes().await?;
-                    let file_name = Url::parse(path_str.clone().as_str())
-                        .unwrap()
-                        .path_segments()
-                        .unwrap()
-                        .last()
-                        .unwrap_or("file")
+            for (name, content) in &prepared.multipart {
+                if let Some(download_url) = content.strip_prefix("download://") {
+                    let response = reqwest::get(download_url).await.map_err(|e| {
+                        format!("cannot download `{}`: {}", download_url, describe(&e))
+                    })?;
+                    let bytes = response.bytes().await.map_err(|e| {
+                        format!("cannot download `{}`: {}", download_url, describe(&e))
+                    })?;
+                    let file_name = Url::parse(download_url)
+                        .ok()
+                        .and_then(|u| {
+                            u.path_segments()
+                                .and_then(|s| s.last().map(|s| s.to_string()))
+                        })
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or_else(|| "file".to_string());
+
+                    let mime = from_path(download_url).first_or_octet_stream();
+                    let part = Part::bytes(bytes.to_vec())
+                        .file_name(file_name)
+                        .mime_str(mime.as_ref())
+                        .map_err(|e| format!("invalid mime type for `{}`: {}", name, e))?;
+                    m = m.part(name.clone(), part);
+                } else if let Some(path_str) = content.strip_prefix("file://") {
+                    let path = Path::new(path_str);
+                    let file_name = path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .ok_or(format!("invalid file path `{}`", path_str))?
                         .to_string();
+                    let content = fs::read(path)
+                        .map_err(|e| format!("cannot read file `{}`: {}", path_str, e))?;
 
-                    let mime = from_path(&path_str.as_str()).first_or_octet_stream();
-
-                    let file_part = Part::bytes(bytes.to_vec())
-                        .file_name(file_name.clone())
+                    let mime = from_path(path).first_or_octet_stream();
+                    let part = Part::bytes(content)
+                        .file_name(file_name)
                         .mime_str(mime.as_ref())
-                        .ok();
-                    m = m.part(part.name.clone(), file_part.unwrap());
-                } else if part.content.starts_with("file://") {
-                    let path_str = part.content.clone().replace("file://", "");
-                    let path = Path::new(&path_str);
-                    let file_name = path.file_name().unwrap().to_str().unwrap().to_string();
-                    let content: Vec<u8> = fs::read(path).unwrap();
-
-                    let mime = from_path(&path).first_or_octet_stream();
-
-                    let file_part = Part::bytes(content)
-                        .file_name(file_name.clone())
-                        .mime_str(mime.as_ref())
-                        .ok();
-
-                    m = m.part(part.name.clone(), file_part.unwrap());
+                        .map_err(|e| format!("invalid mime type for `{}`: {}", name, e))?;
+                    m = m.part(name.clone(), part);
                 } else {
-                    m = m.text(part.name.clone(), part.content.to_string());
+                    m = m.text(name.clone(), content.clone());
                 }
             }
 
-            multipart = Some(m);
+            form = Some(m);
+        }
+
+        self.send_recorded(
+            id,
+            &req.method,
+            &prepared.url,
+            &prepared.headers,
+            &prepared.body,
+            form,
+        )
+        .await
+    }
+
+    /// Sends a fully-resolved request and records the run in history.
+    async fn send_recorded(
+        &self,
+        id: &str,
+        method: &str,
+        url: &str,
+        headers: &HashMap<String, String>,
+        body: &str,
+        form: Option<multipart::Form>,
+    ) -> Result<(String, String, String), String> {
+        let mut http_headers = HeaderMap::new();
+        for (key, value) in headers {
+            let header_name = HeaderName::from_bytes(key.as_bytes())
+                .map_err(|_| format!("invalid header name `{}`", key))?;
+            let header_value = HeaderValue::from_str(value)
+                .map_err(|_| format!("invalid value for header `{}`: `{}`", key, value))?;
+            http_headers.insert(header_name, header_value);
+        }
+        if form.is_some() {
+            // reqwest sets the multipart boundary itself
             http_headers.remove("Content-Type");
         }
 
         let client = Client::new();
+        let request = client
+            .request(crate::request::parse_method(method), url)
+            .headers(http_headers);
 
-        let response = if multipart.is_some() {
-            client
-                .request(http_method, new.path)
-                .headers(http_headers)
-                .multipart(multipart.unwrap())
-                .send()
-                .await?
-        } else {
-            client
-                .request(http_method, new.path)
-                .body(new.body)
-                .headers(http_headers)
-                .send()
-                .await?
+        let request = match form {
+            Some(f) => request.multipart(f),
+            None => request.body(body.to_string()),
+        };
+
+        let record = |status: u16, ms: u64, resp_body: &str, error: Option<String>| {
+            history::record(
+                &self.filename,
+                history::Record {
+                    v: 1,
+                    req: history::new_run_id(),
+                    ts: get_timestamp(),
+                    id: id.to_string(),
+                    method: method.to_uppercase(),
+                    url: url.to_string(),
+                    status,
+                    ms,
+                    req_headers: headers.clone(),
+                    req_body: body.to_string(),
+                    resp_body: resp_body.to_string(),
+                    error,
+                },
+            );
+        };
+
+        let started = std::time::Instant::now();
+        let response = request.send().await;
+        let ms = started.elapsed().as_millis() as u64;
+
+        let response = match response {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = describe(&e);
+                record(0, ms, "", Some(msg.clone()));
+                return Err(msg);
+            }
         };
 
         let status = response.status();
+        let body = match response.text().await {
+            Ok(b) => b,
+            Err(e) => {
+                let msg = describe(&e);
+                record(status.as_u16(), ms, "", Some(msg.clone()));
+                return Err(msg);
+            }
+        };
 
-        let body = response.text().await?;
-        Ok((status.to_string(), url, body))
+        record(status.as_u16(), ms, &body, None);
+        Ok((status.to_string(), url.to_string(), body))
     }
 
-    pub fn from_file(&mut self, filename: String) {
+    pub fn from_file(&mut self, filename: String) -> Result<(), String> {
         self.filename = filename.clone();
+
+        let content = fs::read_to_string(&filename)
+            .map_err(|e| format!("cannot read `{}`: {}", filename, e))?;
+
         let mut context = "VARS";
         let mut last_id: String = String::new();
         let mut request_body: String = String::new();
-        for line in fs::read_to_string(filename).unwrap().lines() {
-            let mut line = line.to_string();
-            if line.trim().starts_with("#") {
+
+        for (index, raw_line) in content.lines().enumerate() {
+            let ln = index + 1;
+            let line = raw_line.trim();
+
+            if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            if line.starts_with("VARS") {
+
+            if line == "VARS" {
                 context = "VARS";
-            } else if line.starts_with("HOOKS") {
+            } else if line == "HOOKS" {
                 context = "HOOKS";
-            } else if line.starts_with("ID:") {
+            } else if let Some(id) = line.strip_prefix("ID:") {
                 context = "REQUEST";
-                if request_body != "" {
-                    let req = self.requests.get_mut(&last_id).unwrap();
-                    req.set_body(request_body);
+                if !request_body.is_empty() {
+                    self.requests.get_mut(&last_id).unwrap().set_body(request_body);
                     request_body = String::new();
                 }
-                last_id = line.split(":").collect::<Vec<&str>>()[1].trim().to_string();
-                self.add_request(last_id.clone(), Request::default());
+                last_id = id.trim().to_string();
+                if last_id.is_empty() {
+                    return Err(self.parse_error(ln, raw_line, "requests need an id, e.g. `ID: login`"));
+                }
+                if self.requests.contains_key(&last_id) {
+                    return Err(self.parse_error(
+                        ln,
+                        raw_line,
+                        &format!("duplicate request id `{}`", last_id),
+                    ));
+                }
+                self.requests.insert(last_id.clone(), Request::default());
+                self.order.push(last_id.clone());
+            } else if context == "VARS" {
+                let (key, value) = split_key_value(line).ok_or_else(|| {
+                    self.parse_error(ln, raw_line, "variables use `name = value`")
+                })?;
+
+                let mut value = value;
+                if let Some(var) = value.strip_prefix("$env.") {
+                    value = env::var(var).map_err(|_| {
+                        self.parse_error(
+                            ln,
+                            raw_line,
+                            &format!("environment variable `{}` is not set", var),
+                        )
+                    })?;
+                }
+
+                self.variables.insert(key, strip_quotes(&value));
+            } else if context == "HOOKS" {
+                let (key, value) = split_key_value(line).ok_or_else(|| {
+                    self.parse_error(
+                        ln,
+                        raw_line,
+                        "hooks use `name = $req.<request-id> [cache-seconds]`",
+                    )
+                })?;
+                self.hooks.insert(key, value);
             } else {
-                if line.trim() == "" {
-                    continue;
-                }
-
-                if context == "VARS" {
-                    let parts = line.split("=").collect::<Vec<&str>>();
-                    if parts.len() != 2 {
-                        panic!("invalid variable provided {}", line);
-                    }
-                    let mut value = parts[1].trim().to_string();
-                    if value.starts_with("$env.") {
-                        value = env::var(value.replace("$env.", "")).unwrap();
-                    }
-
-                    if value.starts_with('"') && value.ends_with('"')
-                        || value.starts_with("'") && value.ends_with("'")
-                    {
-                        value = value.replace('"', "").replace("'", "");
-                    }
-
-                    self.add_variable(parts[0].trim().to_string(), value);
-                }
-                if context == "HOOKS" {
-                    let parts = line.split("=").collect::<Vec<&str>>();
-                    self.add_hook(parts[0].trim().to_string(), parts[1].trim().to_string());
-                }
-
-                if context == "REQUEST" {
+                // context == "REQUEST"
+                if let Some(rest) = line.strip_prefix("DESCRIPTION:") {
                     let req = self.requests.get_mut(&last_id).unwrap();
-                    if line.starts_with("H:") {
-                        line = line.replace("H:", "");
-                        let parts = line.split("=").collect::<Vec<&str>>();
-                        if parts.len() != 2 {
-                            panic!("invalid header provided {}", line);
-                        }
-                        let key = parts[0].trim().to_string();
-                        let value = parts[1].trim().to_string();
-                        req.add_header(key, value);
-                        continue;
+                    req.set_description(rest.trim().to_string());
+                } else if let Some(rest) = line.strip_prefix("H:") {
+                    let (key, value) = split_key_value(rest).ok_or_else(|| {
+                        self.parse_error(ln, raw_line, "headers use `H: Name = value`")
+                    })?;
+                    let req = self.requests.get_mut(&last_id).unwrap();
+                    req.add_header(key, strip_quotes(&value));
+                } else if let Some(rest) = line.strip_prefix("M:") {
+                    let (key, value) = split_key_value(rest).ok_or_else(|| {
+                        self.parse_error(ln, raw_line, "multipart fields use `M: name = value`")
+                    })?;
+                    let req = self.requests.get_mut(&last_id).unwrap();
+                    req.add_multipart(key, value);
+                } else if is_method_line(line) {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() != 2 {
+                        return Err(self.parse_error(
+                            ln,
+                            raw_line,
+                            "request lines use `METHOD url`, e.g. `GET $baseURL/users`",
+                        ));
                     }
-
-                    if line.starts_with("M:") {
-                        line = line.replace("M:", "");
-                        let parts = line.split("=").collect::<Vec<&str>>();
-                        if parts.len() < 2 {
-                            panic!("invalid multipart form provided {}", line);
-                        }
-                        let key = parts[0].trim().to_string();
-                        let value = parts[1..].join("=").trim().to_string();
-                        req.add_multipart(key.clone(), value);
-                        continue;
+                    let req = self.requests.get_mut(&last_id).unwrap();
+                    req.set_method(parts[0].to_string());
+                    req.set_path(parts[1].to_string());
+                } else {
+                    if self.requests[&last_id].method.is_empty() {
+                        return Err(self.parse_error(
+                            ln,
+                            raw_line,
+                            &format!(
+                                "request `{}` needs a `METHOD url` line before its body",
+                                last_id
+                            ),
+                        ));
                     }
-
-                    if line.starts_with("GET")
-                        || line.starts_with("POST")
-                        || line.starts_with("PUT")
-                        || line.starts_with("DELETE")
-                        || line.starts_with("PATCH")
-                        || line.starts_with("HEAD")
-                        || line.starts_with("OPTIONS")
-                    {
-                        let parts: Vec<&str> = line.split(" ").collect::<Vec<&str>>();
-                        if parts.len() != 2 {
-                            panic!("invalid request provided {}", line);
-                        }
-                        req.set_method(parts[0].trim().to_string());
-                        req.set_path(parts[1].trim().to_string());
-                        continue;
-                    }
-
-                    request_body.push_str(&line.trim().to_string());
+                    request_body.push_str(line);
                 }
             }
         }
-        if request_body != "" {
-            let req = self.requests.get_mut(&last_id).unwrap();
-            req.set_body(request_body);
+
+        if !request_body.is_empty() {
+            self.requests.get_mut(&last_id).unwrap().set_body(request_body);
         }
+
+        for id in &self.order {
+            if self.requests[id].method.is_empty() {
+                return Err(format!(
+                    "request `{}` in {} has no `METHOD url` line",
+                    id, filename
+                ));
+            }
+        }
+
+        Ok(())
     }
 
-    fn add_request(&mut self, id: String, request: Request) {
-        self.requests.insert(id, request);
+    fn parse_error(&self, line_number: usize, line: &str, hint: &str) -> String {
+        format!(
+            "invalid line {} of {}:\n  {}\n  {} {}",
+            line_number,
+            self.filename,
+            line.trim(),
+            "hint:".bold(),
+            hint
+        )
+    }
+}
+
+fn print_response(method: &str, url: &str, status: &str, result: &str) {
+    let status_colored = match status.chars().next() {
+        Some('2') => status.bold().green(),
+        Some('3') => status.bold().yellow(),
+        _ => status.bold().red(),
+    };
+
+    println!(
+        "{}{}{} {}",
+        "[".bold().green(),
+        method.bold().green(),
+        "]".bold().green(),
+        url.bold().green()
+    );
+    println!("{} {}", "Status:".bold().green(), status_colored);
+
+    let pretty_json: Value = serde_json::from_str(result).unwrap_or(Value::Null);
+    if !pretty_json.is_null() {
+        println!("{}", to_string_pretty(&pretty_json).unwrap());
+    } else {
+        println!("{}", result);
+    }
+}
+
+/// Splits `key = value` on the FIRST `=` only, so values containing `=`
+/// (base64, signatures, urls) survive intact. Rejects keys that aren't a
+/// single bare word, which catches lines missing their `=` separator.
+fn split_key_value(line: &str) -> Option<(String, String)> {
+    let (key, value) = line.split_once('=')?;
+    let key = key.trim();
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some((key.to_string(), value.trim().to_string()))
+}
+
+/// Removes one pair of matching surrounding quotes, leaving inner quotes alone.
+fn strip_quotes(value: &str) -> String {
+    let bytes = value.as_bytes();
+    if value.len() >= 2
+        && (bytes[0] == b'"' && bytes[value.len() - 1] == b'"'
+            || bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'')
+    {
+        return value[1..value.len() - 1].to_string();
+    }
+    value.to_string()
+}
+
+fn is_method_line(line: &str) -> bool {
+    ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+        .iter()
+        .any(|m| line.starts_with(m))
+}
+
+fn describe(e: &reqwest::Error) -> String {
+    // reqwest errors nest the same cause several times; report the message
+    // plus the root cause only.
+    let mut root = None;
+    let mut source = e.source();
+    while let Some(s) = source {
+        root = Some(s.to_string());
+        source = s.source();
     }
 
-    fn add_variable(&mut self, name: String, value: String) {
-        self.variables.insert(name, value);
+    let msg = e.to_string();
+    match root {
+        Some(cause) if !msg.contains(&cause) => format!("{}: {}", msg, cause),
+        _ => msg,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+
+    fn load(content: &str) -> Result<LazyReq, String> {
+        let path = std::env::temp_dir().join(format!("lazyreq-test-{}.lreq", uuid::Uuid::new_v4()));
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+
+        let mut lazyreq = LazyReq::new();
+        let result = lazyreq.from_file(path.to_string_lossy().to_string());
+        let _ = fs::remove_file(&path);
+        result.map(|_| lazyreq)
     }
 
-    fn add_hook(&mut self, id: String, value: String) {
-        self.hooks.insert(id, value);
+    const DEMO: &str = "VARS
+  baseURL = http://localhost:8080
+  quoted = \"with spaces\"
+
+HOOKS
+  login = $req.login 30
+
+ID: login
+POST $baseURL/login
+H: Content-Type = application/json
+{\"email\": \"a@b.c\"}
+
+ID: me
+DESCRIPTION: Current user
+GET $baseURL/users/me
+H: Authorization = Bearer $login.token
+";
+
+    #[test]
+    fn parses_vars_hooks_and_requests() {
+        let lazyreq = load(DEMO).unwrap();
+
+        assert_eq!(lazyreq.variables["baseURL"], "http://localhost:8080");
+        assert_eq!(lazyreq.variables["quoted"], "with spaces"); // quotes stripped
+        assert_eq!(lazyreq.hooks["login"], "$req.login 30");
+        assert_eq!(lazyreq.order, vec!["login", "me"]);
+
+        let login = &lazyreq.requests["login"];
+        assert_eq!(login.method, "POST");
+        assert_eq!(login.path, "$baseURL/login");
+        assert_eq!(login.body, "{\"email\": \"a@b.c\"}");
+
+        let me = &lazyreq.requests["me"];
+        assert_eq!(me.description, "Current user");
+        assert_eq!(me.headers["Authorization"], "Bearer $login.token");
+    }
+
+    #[test]
+    fn parse_errors_carry_line_numbers_and_hints() {
+        let err = load("ID: a\nGET http://x.dev\n\nID: a\nGET http://x.dev\n").err().unwrap();
+        assert!(err.contains("duplicate request id `a`"));
+        assert!(err.contains("line 4"));
+
+        let err = load("ID: a\nsome body before method\n").err().unwrap();
+        assert!(err.contains("needs a `METHOD url` line"));
+
+        let err = load("ID: a\n").err().unwrap();
+        assert!(err.contains("no `METHOD url` line"));
+
+        let err = load("ID:\nGET http://x.dev\n").err().unwrap();
+        assert!(err.contains("requests need an id"));
+    }
+
+    #[tokio::test]
+    async fn interpolates_vars_env_and_escapes() {
+        let lazyreq = load(DEMO).unwrap();
+
+        let url = lazyreq
+            .interpolate("$baseURL/users?q=$quoted", true, None, 0)
+            .await
+            .unwrap();
+        assert_eq!(url, "http://localhost:8080/users?q=with spaces");
+
+        std::env::set_var("LAZYREQ_TEST_TOKEN", "t-123");
+        let header = lazyreq
+            .interpolate("Bearer $env.LAZYREQ_TEST_TOKEN", true, None, 0)
+            .await
+            .unwrap();
+        assert_eq!(header, "Bearer t-123");
+
+        let literal = lazyreq.interpolate("costs $$5", true, None, 0).await.unwrap();
+        assert_eq!(literal, "costs $5");
+    }
+
+    #[tokio::test]
+    async fn strict_and_lenient_unknown_tokens() {
+        let lazyreq = load(DEMO).unwrap();
+
+        // URLs and headers reject unknown tokens...
+        assert!(lazyreq.interpolate("$nope", true, None, 0).await.is_err());
+        // ...bodies pass them through so JSON dollar-words keep working
+        let body = lazyreq
+            .interpolate("{\"filter\": {\"$gte\": 5}}", false, None, 0)
+            .await
+            .unwrap();
+        assert_eq!(body, "{\"filter\": {\"$gte\": 5}}");
+    }
+
+    #[tokio::test]
+    async fn body_token_resolves_for_signing() {
+        let lazyreq = load(DEMO).unwrap();
+
+        let signed = lazyreq
+            .interpolate("sig of $body", true, Some("{\"a\":1}"), 0)
+            .await
+            .unwrap();
+        assert_eq!(signed, "sig of {\"a\":1}");
+        // ...but is an error where no body exists yet
+        assert!(lazyreq.interpolate("$body", true, None, 0).await.is_err());
+    }
+
+    #[test]
+    fn split_key_value_splits_on_first_equals_only() {
+        assert_eq!(
+            split_key_value("Authorization = abc=def=="),
+            Some(("Authorization".to_string(), "abc=def==".to_string()))
+        );
+        assert_eq!(split_key_value("no separator"), None);
+        assert_eq!(split_key_value("two words = x"), None);
+    }
+
+    #[test]
+    fn strip_quotes_removes_one_matching_pair() {
+        assert_eq!(strip_quotes("\"hello\""), "hello");
+        assert_eq!(strip_quotes("'hello'"), "hello");
+        assert_eq!(strip_quotes("\"mismatched'"), "\"mismatched'");
+        assert_eq!(strip_quotes("\"\"inner\"\""), "\"inner\"");
     }
 }

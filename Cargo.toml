@@ -1,17 +1,27 @@
 [package]
 name = "lazyreq"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+license = "MIT"
+description = "A lazy, file-based HTTP client for your terminal"
+repository = "https://github.com/2yuri/lazyreq"
 
 [dependencies]
 regex = "1.10.6"
-reqwest = { version = "0.11", features = ["blocking", "json", "multipart"] }
-serde_json = "1.0"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1.3", features = ["v4"] }
 serde = { version = "1.0", features = ["derive"] }
 async-recursion = "1.1.1"
+chacha20poly1305 = "0.10"
 colored = "2.0"
+flate2 = "1.0"
 home = "0.5"
 mime_guess = "2.0"
-openssl = { version = "0.10", features = ["vendored"] }
+rand = "0.8"
+hmac = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"

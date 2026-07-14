@@ -1,26 +1,60 @@
 use std::env;
+use std::process::exit;
 
-use config::Config;
+use colored::*;
+use config::{Config, Mode};
 use lazyreq::LazyReq;
 
 mod cache;
 mod config;
+mod functions;
+mod history;
+mod import;
 mod lazyreq;
 mod request;
 mod timest;
+mod vault;
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
 
-    let config = Config::new(&args);
+    if let Err(msg) = run(&args).await {
+        eprintln!("{} {}", "error:".red().bold(), msg);
+        exit(1);
+    }
+}
+
+async fn run(args: &[String]) -> Result<(), String> {
+    let config = Config::new(args)?;
+
+    if let Mode::Version = config.mode {
+        println!("lazyreq {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    if let Mode::Import(command) = &config.mode {
+        print!("{}", import::curl_to_lreq(command)?);
+        return Ok(());
+    }
+
+    if let Mode::History(opts) = &config.mode {
+        // History only needs the file's identity, not a successful parse —
+        // past runs stay readable even while the file is mid-edit.
+        let id = (!config.target.is_empty()).then_some(config.target.as_str());
+        return history::show(&config.filename, id, opts);
+    }
 
     let mut lazyreq = LazyReq::new();
-    lazyreq.from_file(config.filename);
-    
-    if config.export_curl {
-        lazyreq.export_curl(config.target).await;
-    } else {
-        lazyreq.do_request(config.target).await;
+    lazyreq.from_file(config.filename)?;
+
+    match config.mode {
+        Mode::Import(_) | Mode::Version | Mode::History(_) => unreachable!(),
+        Mode::List => lazyreq.list(),
+        Mode::ExportCurl => lazyreq.export_curl(config.target).await?,
+        Mode::Retry(run_id) => lazyreq.retry(run_id).await?,
+        Mode::Run => lazyreq.do_request(config.target).await?,
     }
+
+    Ok(())
 }

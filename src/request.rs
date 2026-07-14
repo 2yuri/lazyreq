@@ -5,6 +5,7 @@ use reqwest::Method;
 pub struct Request {
     pub method: String,
     pub path: String,
+    pub description: String,
     pub headers: HashMap<String, String>,
     pub body: String,
     pub multipart: Vec<MultiPart>,
@@ -16,37 +17,28 @@ pub struct MultiPart {
     pub content: String,
 }
 
+pub fn parse_method(method: &str) -> Method {
+    match method.to_uppercase().as_str() {
+        "GET" => Method::GET,
+        "POST" => Method::POST,
+        "PUT" => Method::PUT,
+        "DELETE" => Method::DELETE,
+        "PATCH" => Method::PATCH,
+        "HEAD" => Method::HEAD,
+        "OPTIONS" => Method::OPTIONS,
+        _ => Method::GET, // Default to GET if unknown
+    }
+}
+
 impl Request {
     pub fn default() -> Request {
         Request {
-            method: "NOT SET".to_string(),
+            method: "".to_string(),
             path: "".to_string(),
+            description: "".to_string(),
             headers: HashMap::new(),
             body: "".to_string(),
             multipart: Vec::new(),
-        }
-    }
-
-    pub fn format_method(&self) -> Method {
-        match self.method.to_uppercase().as_str() {
-            "GET" => Method::GET,
-            "POST" => Method::POST,
-            "PUT" => Method::PUT,
-            "DELETE" => Method::DELETE,
-            "PATCH" => Method::PATCH,
-            "HEAD" => Method::HEAD,
-            "OPTIONS" => Method::OPTIONS,
-            _ => Method::GET, // Default to GET if unknown
-        }
-    }
-
-    pub fn new(method: String, path: String, body: String, multipart: Vec<MultiPart>) -> Request {
-        Request {
-            method,
-            path,
-            headers: HashMap::new(),
-            body,
-            multipart,
         }
     }
 
@@ -61,8 +53,8 @@ impl Request {
         });
     }
 
-    pub fn set_headers(&mut self, headers: HashMap<String, String>) {
-        self.headers = headers;
+    pub fn set_description(&mut self, description: String) {
+        self.description = description;
     }
 
     pub fn set_method(&mut self, method: String) {
