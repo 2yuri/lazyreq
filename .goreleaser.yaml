@@ -40,3 +40,6 @@ universal_binaries:
 
 source:
   enabled: true
+
+release:
+  prerelease: auto

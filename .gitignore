@@ -1,3 +1,4 @@
 # Generated files
 /target/
 /dist/
+/.zig-cache/
