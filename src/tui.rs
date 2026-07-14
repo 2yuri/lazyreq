@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 
 use crate::history::{self, Record};
 use crate::lazyreq::LazyReq;
+use crate::theme::{self, Theme};
 use crate::timest::format_timestamp;
 
 const SKIP_DIRS: &[&str] = &[
@@ -70,6 +71,7 @@ struct HistEntry {
 
 pub struct App {
     root: String,
+    themes: theme::Themes,
     files: Vec<FileEntry>,
     file_idx: usize,
     req_idx: usize,
@@ -162,6 +164,7 @@ impl App {
 
         let mut app = App {
             root: shorten_home(&root.to_string_lossy()),
+            themes: theme::load(),
             files,
             file_idx: 0,
             req_idx: 0,
@@ -176,6 +179,10 @@ impl App {
         };
         app.reload_history();
         app
+    }
+
+    fn th(&self) -> Theme {
+        self.themes.active()
     }
 
     fn selected_file(&self) -> Option<&FileEntry> {
@@ -357,6 +364,14 @@ fn handle_key(
     match code {
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Char('?') => app.overlay = Some(Overlay::Keys),
+        KeyCode::Char('t') => {
+            let next = app.themes.next_name();
+            app.themes.current = next.clone();
+            app.status = match theme::save_current(&next) {
+                Ok(()) => Some(format!("theme: {}", next)),
+                Err(e) => Some(e),
+            };
+        }
         KeyCode::Char('1') => { app.focus = Panel::Files; app.reload_history(); }
         KeyCode::Char('2') => { app.focus = Panel::Requests; app.reload_history(); }
         KeyCode::Char('3') => app.focus = Panel::History,
@@ -420,57 +435,47 @@ fn self_len(app: &App) -> usize {
 
 // ---------------------------------------------------------------- rendering
 //
-// Fixed default theme drawn from the lazyreq logo — independent of the
-// terminal's color scheme (a user-config theme may come later):
-//   #bb671f copper   → focused borders, headings, selection
-//   #9a5619 rust     → secondary accents (keys, run ids, inactive titles)
-//   #613614 bark     → resting borders
-//   #8b7b2e olive    → in-flight/running accents
-// Rounded borders throughout, matching the sketch.
+// All colors come from the active theme (see theme.rs): built-ins ship in
+// the binary, ~/.lazyreq/themes.json selects/overrides, `t` cycles live.
+// Background AND foreground are forced so the UI renders the same on any
+// terminal color scheme. Rounded borders throughout, matching the sketch.
 
-const COPPER: Color = Color::Rgb(0xbb, 0x67, 0x1f);
-const RUST: Color = Color::Rgb(0x9a, 0x56, 0x19);
-const BARK: Color = Color::Rgb(0x61, 0x36, 0x14);
-const OLIVE: Color = Color::Rgb(0x8b, 0x7b, 0x2e);
-const INK: Color = Color::Rgb(0x1d, 0x14, 0x0b);
-/// Forced background + foreground so the UI looks the same on any terminal.
-const BG: Color = Color::Rgb(0x16, 0x0f, 0x09);
-const FG: Color = Color::Rgb(0xe6, 0xd7, 0xbf);
-const DIM: Color = Color::Rgb(0x8a, 0x79, 0x63);
-
-fn base() -> Style {
-    Style::new().bg(BG).fg(FG)
+fn base(t: Theme) -> Style {
+    Style::new().bg(t.background).fg(t.text)
 }
 
-fn accent() -> Style {
-    Style::new().fg(COPPER)
+fn accent(t: Theme) -> Style {
+    Style::new().fg(t.primary)
 }
 
-fn secondary() -> Style {
-    Style::new().fg(RUST)
+fn secondary(t: Theme) -> Style {
+    Style::new().fg(t.secondary)
 }
 
-fn olive() -> Style {
-    Style::new().fg(OLIVE)
+fn running_style(t: Theme) -> Style {
+    Style::new().fg(t.running)
 }
 
-fn border_rest() -> Style {
-    Style::new().fg(BARK)
+fn border_rest(t: Theme) -> Style {
+    Style::new().fg(t.border)
 }
 
-fn dim() -> Style {
-    Style::new().fg(DIM)
+fn dim(t: Theme) -> Style {
+    Style::new().fg(t.muted)
 }
 
-fn selected_style() -> Style {
-    Style::new().fg(INK).bg(COPPER).add_modifier(Modifier::BOLD)
+fn selected_style(t: Theme) -> Style {
+    Style::new()
+        .fg(t.selection_text)
+        .bg(t.primary)
+        .add_modifier(Modifier::BOLD)
 }
 
-fn panel_block(title: String, active: bool) -> Block<'static> {
+fn panel_block(t: Theme, title: String, active: bool) -> Block<'static> {
     let (border, title_style) = if active {
-        (accent(), accent().bold())
+        (accent(t), accent(t).bold())
     } else {
-        (border_rest(), secondary())
+        (border_rest(t), secondary(t))
     };
     Block::default()
         .borders(Borders::ALL)
@@ -481,9 +486,10 @@ fn panel_block(title: String, active: bool) -> Block<'static> {
 }
 
 fn draw(frame: &mut Frame, app: &mut App) {
+    let th = app.th();
     // Paint the whole screen with the theme's own bg/fg first; widgets that
     // don't set a bg inherit it, keeping the look terminal-independent.
-    frame.render_widget(Block::default().style(base()), frame.area());
+    frame.render_widget(Block::default().style(base(th)), frame.area());
 
     let outer = Layout::default()
         .direction(Direction::Vertical)
@@ -506,7 +512,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         .split(columns[1]);
 
     draw_files(frame, app, left[0]);
-    draw_shortcuts(frame, left[1]);
+    draw_shortcuts(frame, th, left[1]);
     draw_requests(frame, app, right[0]);
     draw_history(frame, app, right[1]);
     draw_status_line(frame, app, outer[1]);
@@ -515,12 +521,13 @@ fn draw(frame: &mut Frame, app: &mut App) {
         Some(Overlay::Detail { file, record, scroll }) => {
             draw_detail(frame, app, *file, record, *scroll)
         }
-        Some(Overlay::Keys) => draw_keys(frame),
+        Some(Overlay::Keys) => draw_keys(frame, th),
         None => {}
     }
 }
 
 fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
+    let th = app.th();
     let items: Vec<ListItem> = app
         .files
         .iter()
@@ -532,15 +539,15 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
             };
             ListItem::new(vec![
                 Line::from(vec![Span::styled(f.name.clone(), Style::new().bold()), marker]),
-                Line::from(Span::styled(f.dir.clone(), dim())),
+                Line::from(Span::styled(f.dir.clone(), dim(th))),
             ])
         })
         .collect();
 
     let empty = items.is_empty();
     let list = List::new(items)
-        .block(panel_block("files".to_string(), app.focus == Panel::Files))
-        .highlight_style(selected_style());
+        .block(panel_block(th, "files".to_string(), app.focus == Panel::Files))
+        .highlight_style(selected_style(th));
 
     let mut state = ListState::default();
     state.select((!empty).then_some(app.file_idx));
@@ -551,19 +558,20 @@ fn draw_files(frame: &mut Frame, app: &mut App, area: Rect) {
             "\nno .lreq files under\n{}\n\ntry:  lazyreq --path <dir>",
             app.root
         ))
-        .style(dim())
+        .style(dim(th))
         .alignment(Alignment::Center)
         .wrap(Wrap { trim: false });
         frame.render_widget(hint, area.inner(Margin::new(2, 1)));
     }
 }
 
-fn draw_shortcuts(frame: &mut Frame, area: Rect) {
+fn draw_shortcuts(frame: &mut Frame, th: Theme, area: Rect) {
     let keys = [
         ("1·2·3", "jump panel"),
         ("⏎", "open · run · view"),
         ("r", "retry run"),
         ("j k h l", "navigate"),
+        ("t", "cycle theme"),
         ("?", "all keybindings"),
         ("q", "quit"),
     ];
@@ -571,23 +579,24 @@ fn draw_shortcuts(frame: &mut Frame, area: Rect) {
         .iter()
         .map(|(k, d)| {
             Line::from(vec![
-                Span::styled(format!("{:9}", k), secondary()),
-                Span::styled(d.to_string(), dim()),
+                Span::styled(format!("{:9}", k), secondary(th)),
+                Span::styled(d.to_string(), dim(th)),
             ])
         })
         .collect();
     frame.render_widget(
-        Paragraph::new(lines).block(panel_block("shortcuts".to_string(), false)),
+        Paragraph::new(lines).block(panel_block(th, "shortcuts".to_string(), false)),
         area,
     );
 }
 
 fn draw_requests(frame: &mut Frame, app: &mut App, area: Rect) {
+    let th = app.th();
     let title = match app.selected_file() {
         Some(f) => format!("requests · {}", f.name),
         None => "requests".to_string(),
     };
-    let block = panel_block(title, app.focus == Panel::Requests);
+    let block = panel_block(th, title, app.focus == Panel::Requests);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -655,7 +664,7 @@ fn draw_requests(frame: &mut Frame, app: &mut App, area: Rect) {
         let last_line = if running {
             Line::from(Span::styled(
                 format!("{} running…", SPINNER[app.tick % SPINNER.len()]),
-                olive(),
+                running_style(th),
             ))
         } else {
             match app.last_run(app.file_idx, id) {
@@ -665,18 +674,18 @@ fn draw_requests(frame: &mut Frame, app: &mut App, area: Rect) {
                         Span::styled(status, Style::new().fg(color).bold()),
                         Span::styled(
                             format!(" · {}ms · {}", rec.ms, &format_timestamp(rec.ts)[11..16]),
-                            dim(),
+                            dim(th),
                         ),
                     ])
                 }
-                None => Line::from(Span::styled("not run yet", dim())),
+                None => Line::from(Span::styled("not run yet", dim(th))),
             }
         };
 
         let (border, title_style) = if selected {
-            (accent(), accent().bold())
+            (accent(th), accent(th).bold())
         } else {
-            (border_rest(), secondary().bold())
+            (border_rest(th), secondary(th).bold())
         };
         let card_block = Block::default()
             .borders(Borders::ALL)
@@ -699,6 +708,7 @@ fn status_span(record: &Record) -> (String, Color) {
 }
 
 fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
+    let th = app.th();
     let scope = match app.focus {
         Panel::Files => "all files".to_string(),
         _ => app
@@ -718,10 +728,10 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
         items.push(ListItem::new(Line::from(vec![
             Span::styled(
                 format!("{} {}…  ", SPINNER[app.tick % SPINNER.len()], running.kind),
-                olive(),
+                running_style(th),
             ),
             Span::styled(running.id.clone(), Style::new().bold()),
-            Span::styled(format!("  {}", file_name), dim()),
+            Span::styled(format!("  {}", file_name), dim(th)),
         ])));
     }
     for entry in &app.history {
@@ -733,20 +743,20 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
         };
         let run_id = if rec.req.is_empty() { "········" } else { &rec.req };
         items.push(ListItem::new(Line::from(vec![
-            Span::styled(format!("{} ", run_id), secondary()),
-            Span::styled(format!("{} ", &format_timestamp(rec.ts)[5..16]), dim()),
+            Span::styled(format!("{} ", run_id), secondary(th)),
+            Span::styled(format!("{} ", &format_timestamp(rec.ts)[5..16]), dim(th)),
             Span::raw(format!("{:12} ", rec.id)),
-            Span::styled(format!("{:5} ", rec.method), dim()),
+            Span::styled(format!("{:5} ", rec.method), dim(th)),
             Span::styled(format!("{:4} ", status), Style::new().fg(color).bold()),
-            Span::styled(format!("{:>5}ms  ", rec.ms), dim()),
-            Span::styled(tail, dim()),
+            Span::styled(format!("{:>5}ms  ", rec.ms), dim(th)),
+            Span::styled(tail, dim(th)),
         ])));
     }
 
     let empty = items.is_empty();
     let list = List::new(items)
-        .block(panel_block(format!("history · {}", scope), app.focus == Panel::History))
-        .highlight_style(selected_style());
+        .block(panel_block(th, format!("history · {}", scope), app.focus == Panel::History))
+        .highlight_style(selected_style(th));
 
     let mut state = ListState::default();
     state.select((!empty).then_some(app.hist_idx));
@@ -754,6 +764,7 @@ fn draw_history(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_status_line(frame: &mut Frame, app: &App, area: Rect) {
+    let th = app.th();
     let line = match &app.status {
         Some(msg) => Line::from(Span::styled(
             format!(" {}", msg),
@@ -765,14 +776,14 @@ fn draw_status_line(frame: &mut Frame, app: &App, area: Rect) {
                 Panel::Requests => " ⏎ run  ·  h/l j/k move  ·  tab next panel  ·  ? keys  ·  q quit",
                 Panel::History => " ⏎ view  ·  r retry  ·  j/k move  ·  tab next panel  ·  ? keys  ·  q quit",
             };
-            Line::from(Span::styled(hints, dim()))
+            Line::from(Span::styled(hints, dim(th)))
         }
     };
     frame.render_widget(Paragraph::new(line), area);
 
     let root = Paragraph::new(Line::from(Span::styled(
         format!("{} ", app.root),
-        dim(),
+        dim(th),
     )))
     .alignment(Alignment::Right);
     frame.render_widget(root, area);
@@ -798,6 +809,7 @@ fn centered(area: Rect, pct_x: u16, pct_y: u16) -> Rect {
 }
 
 fn draw_detail(frame: &mut Frame, app: &App, file: usize, record: &Record, scroll: u16) {
+    let th = app.th();
     let area = centered(frame.area(), 80, 80);
     frame.render_widget(Clear, area);
 
@@ -847,19 +859,19 @@ fn draw_detail(frame: &mut Frame, app: &App, file: usize, record: &Record, scrol
     let widget = Paragraph::new(Text::from(lines))
         .block(
             Block::default()
-                .style(base())
+                .style(base(th))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(accent())
+                .border_style(accent(th))
                 .padding(Padding::new(2, 2, 1, 1))
-                .title(Span::styled(title, accent().bold()))
-                .title_bottom(Span::styled(" j/k scroll · esc close ", dim())),
+                .title(Span::styled(title, accent(th).bold()))
+                .title_bottom(Span::styled(" j/k scroll · esc close ", dim(th))),
         )
         .scroll((scroll, 0));
     frame.render_widget(widget, area);
 }
 
-fn draw_keys(frame: &mut Frame) {
+fn draw_keys(frame: &mut Frame, th: Theme) {
     let area = centered(frame.area(), 50, 60);
     frame.render_widget(Clear, area);
 
@@ -870,6 +882,7 @@ fn draw_keys(frame: &mut Frame) {
         ("⏎", "files: open · requests: run · history: view"),
         ("r", "retry the selected run (exact body, fresh auth)"),
         ("j/k in view", "scroll the detail view"),
+        ("t", "cycle color theme (persisted to ~/.lazyreq/themes.json)"),
         ("esc", "close view"),
         ("q / ctrl-c", "quit"),
     ];
@@ -877,7 +890,7 @@ fn draw_keys(frame: &mut Frame) {
         .iter()
         .map(|(k, d)| {
             Line::from(vec![
-                Span::styled(format!("{:14}", k), secondary()),
+                Span::styled(format!("{:14}", k), secondary(th)),
                 Span::raw(d.to_string()),
             ])
         })
@@ -885,13 +898,13 @@ fn draw_keys(frame: &mut Frame) {
 
     let widget = Paragraph::new(lines).block(
         Block::default()
-            .style(base())
+            .style(base(th))
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(accent())
+            .border_style(accent(th))
             .padding(Padding::new(2, 2, 1, 1))
-            .title(Span::styled(" keybindings ", accent().bold()))
-            .title_bottom(Span::styled(" esc close ", dim())),
+            .title(Span::styled(" keybindings ", accent(th).bold()))
+            .title_bottom(Span::styled(" esc close ", dim(th))),
     );
     frame.render_widget(widget, area);
 }

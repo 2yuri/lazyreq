@@ -97,6 +97,32 @@ Run `lazyreq` with no arguments to open a lazygit-style terminal UI. It scans th
 - **[3] history** — recorded runs (all files while browsing; the selected request's runs once one is focused). Runs appear here live with a spinner while executing. `⏎` opens the full detail (request/response), `r` retries a run — exact recorded body, fresh auth.
 - Navigation is lazygit-flavored: `1/2/3` jump between panels, `tab` cycles, `hjkl`/arrows move, `?` shows all keybindings. View/run only for now — editing comes later.
 
+### Themes
+
+The UI ships five built-in themes — `default` (the lazyreq logo palette), `dracula`, `solarized-dark`, `solarized-light` and `atom` — with background and foreground forced, so it looks the same on any terminal scheme. Press `t` to cycle themes; the choice persists.
+
+Themes live in `~/.lazyreq/themes.json` (created on first run with every built-in, so the format is discoverable). Edit a theme, add your own, or set `current`:
+
+```json
+{
+  "current": "default",
+  "themes": {
+    "mine": {
+      "background": "#160f09",
+      "base": "#e6d7bf",
+      "primary": "#bb671f",
+      "secondary": "#9a5619",
+      "border": "#613614",
+      "running": "#8b7b2e",
+      "muted": "#8a7963",
+      "selection_text": "#1d140b"
+    }
+  }
+}
+```
+
+Missing fields fall back to the `default` palette; user themes join the `t` cycle.
+
 ## CLI
 
 ```sh

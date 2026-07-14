@@ -12,6 +12,7 @@ mod history;
 mod import;
 mod lazyreq;
 mod request;
+mod theme;
 mod timest;
 mod tui;
 mod vault;
