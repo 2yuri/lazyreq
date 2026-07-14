@@ -8,6 +8,7 @@ pub enum Mode {
     /// Interactive terminal UI; the path is the directory to scan for .lreq
     /// files (defaults to the current directory).
     Tui(Option<String>),
+    Update,
     Version,
 }
 
@@ -40,7 +41,8 @@ const USAGE: &str = "usage: lazyreq                      # interactive UI, scans
        lazyreq <file.lreq> --list
        lazyreq <file.lreq> [request-id] --history [--last N] [-v] [--show-headers] [--req RUN-ID] [--success|--failed|--status CODE]
        lazyreq <file.lreq> --retry <run-id>
-       lazyreq import '<curl command>'";
+       lazyreq import '<curl command>'
+       lazyreq update               # self-update to the latest release";
 
 impl Config {
     pub fn new(args: &[String]) -> Result<Config, String> {
@@ -49,6 +51,14 @@ impl Config {
                 filename: String::new(),
                 target: String::new(),
                 mode: Mode::Version,
+            });
+        }
+
+        if matches!(args.get(1).map(|s| s.as_str()), Some("update") | Some("--update")) {
+            return Ok(Config {
+                filename: String::new(),
+                target: String::new(),
+                mode: Mode::Update,
             });
         }
 

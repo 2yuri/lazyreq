@@ -141,8 +141,11 @@ lazyreq <file.lreq> --history             # past runs of every request in the fi
 lazyreq <file.lreq> <request-id> --history  # past runs of one request
 lazyreq <file.lreq> --retry <run-id>      # replay a recorded run (exact body, fresh auth)
 lazyreq import '<curl command>'           # convert a curl command to a request block
+lazyreq update                            # self-update to the latest release
 lazyreq --version                         # print the CLI version
 ```
+
+`lazyreq update` downloads the right build for your platform from the latest GitHub release, verifies its checksum and replaces the running binary in place. The interactive UI also checks for new versions on start (in the background, at most once every 6 hours, silently skipped when offline) and shows a `⬆ vX.Y.Z available` notice in the shortcuts panel.
 
 ```sh
 $ lazyreq api.lreq --list
